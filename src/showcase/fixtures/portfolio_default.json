@@ -1,0 +1,18 @@
+{
+  "_comment": "synthetic demo data — generated on seeded GBM OHLCV, not real market data",
+  "method": "hrp",
+  "weights": [
+    {"ticker": "TCS",       "weight": 0.148},
+    {"ticker": "INFY",      "weight": 0.134},
+    {"ticker": "HDFCBANK",  "weight": 0.127},
+    {"ticker": "ICICIBANK", "weight": 0.119},
+    {"ticker": "RELIANCE",  "weight": 0.113},
+    {"ticker": "HCLTECH",   "weight": 0.098},
+    {"ticker": "WIPRO",     "weight": 0.087},
+    {"ticker": "SBIN",      "weight": 0.076},
+    {"ticker": "ONGC",      "weight": 0.056},
+    {"ticker": "ADANIENT",  "weight": 0.042}
+  ],
+  "effective_n": 8.3,
+  "as_of": "2026-01-15"
+}

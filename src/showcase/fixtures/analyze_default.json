@@ -1,0 +1,69 @@
+{
+  "_comment": "synthetic demo data — generated on seeded GBM OHLCV, not real market data",
+  "as_of": "2026-01-15",
+  "n_holdings": 10,
+  "annualised_vol": 0.187,
+  "max_drawdown": -0.2134,
+  "sharpe": 1.183,
+  "effective_n": 8.3,
+  "current_regime": "bull",
+  "regime_confidence": 0.742,
+  "holdings": [
+    {"ticker": "TCS",       "weight": 0.148, "factor_scores": {"momentum": 0.63, "quality": 0.58, "value": 0.21, "beta": -0.12, "size": 0.44}, "composite":  0.521, "vol_contrib": 0.189, "is_helping": true,  "risk_flags": []},
+    {"ticker": "INFY",      "weight": 0.134, "factor_scores": {"momentum": 0.54, "quality": 0.62, "value": 0.18, "beta": -0.08, "size": 0.39}, "composite":  0.489, "vol_contrib": 0.167, "is_helping": true,  "risk_flags": []},
+    {"ticker": "HDFCBANK",  "weight": 0.127, "factor_scores": {"momentum": 0.48, "quality": 0.51, "value": 0.31, "beta":  0.14, "size": 0.67}, "composite":  0.451, "vol_contrib": 0.143, "is_helping": true,  "risk_flags": []},
+    {"ticker": "ICICIBANK", "weight": 0.119, "factor_scores": {"momentum": 0.51, "quality": 0.44, "value": 0.28, "beta":  0.22, "size": 0.58}, "composite":  0.432, "vol_contrib": 0.138, "is_helping": true,  "risk_flags": ["High correlation with HDFCBANK (0.78)"]},
+    {"ticker": "RELIANCE",  "weight": 0.113, "factor_scores": {"momentum": 0.42, "quality": 0.39, "value": 0.41, "beta":  0.18, "size": 0.81}, "composite":  0.398, "vol_contrib": 0.121, "is_helping": true,  "risk_flags": []},
+    {"ticker": "HCLTECH",   "weight": 0.098, "factor_scores": {"momentum": 0.24, "quality": 0.36, "value": 0.17, "beta": -0.06, "size": 0.38}, "composite":  0.221, "vol_contrib": 0.098, "is_helping": true,  "risk_flags": []},
+    {"ticker": "WIPRO",     "weight": 0.087, "factor_scores": {"momentum": 0.21, "quality": 0.32, "value": 0.15, "beta": -0.09, "size": 0.33}, "composite":  0.198, "vol_contrib": 0.081, "is_helping": true,  "risk_flags": ["High correlation with HCLTECH (0.76)"]},
+    {"ticker": "SBIN",      "weight": 0.076, "factor_scores": {"momentum": 0.04, "quality": 0.08, "value": 0.33, "beta":  0.28, "size": 0.62}, "composite":  0.021, "vol_contrib": 0.076, "is_helping": false, "risk_flags": []},
+    {"ticker": "ONGC",      "weight": 0.056, "factor_scores": {"momentum": -0.11,"quality": -0.08,"value": 0.41, "beta":  0.21, "size": 0.44}, "composite": -0.082, "vol_contrib": 0.051, "is_helping": false, "risk_flags": []},
+    {"ticker": "ADANIENT",  "weight": 0.042, "factor_scores": {"momentum": -0.31,"quality": -0.19,"value": 0.12, "beta":  0.48, "size": 0.71}, "composite": -0.241, "vol_contrib": 0.036, "is_helping": false, "risk_flags": []}
+  ],
+  "factor_exposure": {"momentum": 0.312, "quality": 0.341, "value": 0.267, "beta": 0.089, "size": 0.512},
+  "concentration": {
+    "hhi": 0.1201,
+    "effective_n": 8.33,
+    "max_weight": 0.148,
+    "top3_weight": 0.409
+  },
+  "correlation_clusters": [
+    {"tickers": ["HDFCBANK", "ICICIBANK"], "avg_corr": 0.781, "note": "Avg pairwise correlation 0.78 — consider reducing redundant exposure."},
+    {"tickers": ["HCLTECH", "WIPRO"],      "avg_corr": 0.763, "note": "Avg pairwise correlation 0.76 — consider reducing redundant exposure."}
+  ],
+  "risk_decomposition": {
+    "annualised_vol": 0.187,
+    "factor_variance": 0.02134,
+    "specific_variance": 0.01366,
+    "factor_contrib": {"momentum": 0.00821, "quality": 0.00634, "value": 0.00412, "beta": 0.00267},
+    "total_variance": 0.035
+  },
+  "stress_results": [
+    {"scenario": "COVID Crash (Mar 2020)",       "total_return": -0.3812, "max_drawdown": -0.4123, "ann_vol": 0.6234, "cvar_daily": -0.0487, "n_days": 42},
+    {"scenario": "Taper Tantrum (May 2013)",      "total_return": -0.1234, "max_drawdown": -0.1589, "ann_vol": 0.2987, "cvar_daily": -0.0231, "n_days": 63},
+    {"scenario": "Fed Hike Cycle (2022)",         "total_return": -0.2341, "max_drawdown": -0.2987, "ann_vol": 0.3198, "cvar_daily": -0.0312, "n_days": 252}
+  ],
+  "rebalance": {
+    "suggested_weights": {
+      "TCS": 0.142, "INFY": 0.138, "HDFCBANK": 0.121, "ICICIBANK": 0.098,
+      "RELIANCE": 0.118, "HCLTECH": 0.104, "WIPRO": 0.092, "SBIN": 0.089,
+      "ONGC": 0.061, "ADANIENT": 0.037
+    },
+    "method": "HRP",
+    "effective_n_current": 8.33,
+    "effective_n_suggested": 9.12,
+    "improvement": 0.79
+  },
+  "warnings": [
+    "HDFCBANK and ICICIBANK have 0.78 correlation — holding both adds limited diversification benefit.",
+    "HCLTECH and WIPRO have 0.76 correlation — holding both adds limited diversification benefit."
+  ],
+  "regime_impact": {
+    "current_regime": "bull",
+    "confidence": 0.742,
+    "portfolio_score": 0.312,
+    "active_factors": ["momentum", "quality", "value"],
+    "suppressed_factors": [],
+    "recommendation": "Portfolio has positive momentum tilt — well-positioned for bull regime."
+  }
+}
