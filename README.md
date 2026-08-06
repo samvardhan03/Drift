@@ -1,6 +1,6 @@
 # Drift
 
-**Regime-aware factor research platform for Indian equities.**
+**Regime-aware factor research platform for equities.**
 
 Drift is a systematic alpha research stack that layers five analytical engines — factor scoring, regime detection, IC-weighted signal combination, portfolio optimisation, and risk decomposition — on top of NSE universe data. This repository is a **public demonstration shell**: the API routes and dashboard are fully functional, but all analytic responses are served from precomputed fixtures generated on synthetic data. The proprietary inference engine is not included.
 
