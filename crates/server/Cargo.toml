@@ -24,7 +24,7 @@ async-trait.workspace = true
 printpdf = "=0.12.8"
 uuid.workspace = true
 chrono = { workspace = true, features = ["serde"] }
-calamine = "0.26"
+calamine = "0.36"
 csv.workspace = true
 
 [dev-dependencies]
