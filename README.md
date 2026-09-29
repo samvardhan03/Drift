@@ -171,16 +171,6 @@ Three India-specific scenarios ship at `GET /scenarios`:
 
 ---
 
-## Roadmap (open-core)
-
-- [ ] Demo GIF in README
-- [ ] WebSocket streaming for long-running experiments
-- [ ] Nifty 50 / Bank Nifty / Nifty Midcap 100 universe presets
-- [ ] `cargo-deny` in CI (currently `cargo-audit`)
-- [ ] Rust CLI end-to-end example
-
----
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All PRs must pass `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test --workspace`. Proprietary engine code, formulas, and constants must not be introduced.
