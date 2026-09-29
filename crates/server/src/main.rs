@@ -12,29 +12,16 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 
-use backend::{Backend, RealBackend};
+use backend::{Backend, NoAiBackend, RealBackend};
 use routes::AppState;
 use store::SnapshotStore;
 
-/// On Cloud Run, `/data` is ephemeral local disk: it survives a single
-/// warm instance across requests but is not shared across instances or
-/// revisions, and is lost on cold start/scale-to-zero. Acceptable for a
-/// hackathon-scale demo (see the README's "Persistence" section); a real
-/// deployment would point this at a Cloud SQL instance or a mounted GCS
-/// FUSE volume instead.
-const DEFAULT_SNAPSHOT_DB_PATH: &str = "/data/snapshots.db";
+const DEFAULT_SNAPSHOT_DB_PATH: &str = "./data/snapshots.db";
 
 #[tokio::main]
 async fn main() {
     init_tracing();
 
-    let gemini = match agent::gemini::HttpGeminiClient::new() {
-        Ok(client) => client,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to start: {err}");
-            std::process::exit(1);
-        }
-    };
     let db_path =
         std::env::var("SNAPSHOT_DB_PATH").unwrap_or_else(|_| DEFAULT_SNAPSHOT_DB_PATH.to_string());
     let store = match SnapshotStore::open(&db_path) {
@@ -44,7 +31,26 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let backend: Arc<dyn Backend> = Arc::new(RealBackend::new(gemini, store.clone()));
+
+    let backend: Arc<dyn Backend> = match agent::gemini::HttpGeminiClient::new() {
+        Ok(gemini) => {
+            tracing::info!("GEMINI_API_KEY found — AI features enabled (/ask, narration)");
+            Arc::new(RealBackend::new(gemini, store.clone()))
+        }
+        Err(agent::gemini::GeminiError::MissingApiKey) => {
+            tracing::warn!(
+                "GEMINI_API_KEY not set — starting in compute-only mode. \
+                 /experiment returns EvidenceTrace without AI narration; \
+                 /ask returns 503. Set GEMINI_API_KEY and restart to enable AI features."
+            );
+            Arc::new(NoAiBackend { store: store.clone() })
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "failed to initialise Gemini client: {err}");
+            std::process::exit(1);
+        }
+    };
+
     let state = AppState { backend, store };
 
     let app = build_router(state);

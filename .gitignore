@@ -4,3 +4,9 @@ data/cache/*
 crates/compute/data/
 .DS_Store
 .env
+*.env
+*.db
+*.sqlite
+__pycache__/
+*.py[cod]
+node_modules/

@@ -147,9 +147,51 @@ pub struct RealBackend {
     store: std::sync::Arc<store::SnapshotStore>,
 }
 
+/// Backend used when GEMINI_API_KEY is not set. Compute experiments work
+/// fully; /ask returns a clear 503 explaining how to enable AI features.
+pub struct NoAiBackend {
+    pub store: std::sync::Arc<store::SnapshotStore>,
+}
+
 impl RealBackend {
     pub fn new(gemini: agent::gemini::HttpGeminiClient, store: std::sync::Arc<store::SnapshotStore>) -> Self {
         RealBackend { gemini, store }
+    }
+}
+
+#[async_trait::async_trait]
+impl Backend for NoAiBackend {
+    async fn run_experiment(
+        &self,
+        experiment: Experiment,
+        portfolio: Portfolio,
+        policy: Option<RiskPolicy>,
+    ) -> Result<EvidenceTrace, BackendError> {
+        let holdings: Vec<(String, f64)> =
+            portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+        let ctx = compute::context::ExperimentContext {
+            store: self.store.clone(),
+            portfolio_hash: compute::portfolio::portfolio_hash(&holdings),
+            policy,
+        };
+        let trace = tokio::task::spawn_blocking(move || {
+            agent::pipeline::compute_trace(&experiment, &portfolio, &ctx)
+        })
+        .await
+        .map_err(|e| BackendError::Internal(format!("compute task panicked: {e}")))??;
+        Ok(trace)
+    }
+
+    async fn run_ask(
+        &self,
+        _portfolio: Portfolio,
+        _message: String,
+        _conversation_history: Vec<ConversationTurn>,
+        _policy: Option<RiskPolicy>,
+    ) -> Result<PipelineResult, BackendError> {
+        Err(BackendError::GeminiUnavailable(
+            "AI features require GEMINI_API_KEY — set the environment variable and restart".to_string(),
+        ))
     }
 }
 
