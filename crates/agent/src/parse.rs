@@ -83,7 +83,10 @@ pub async fn parse_experiment<C: GeminiClient>(
     };
 
     let response = client.generate(MODEL_PARSE, &request).await?;
-    let candidate = response.candidates.first().ok_or(ParseError::NoCandidates)?;
+    let candidate = response
+        .candidates
+        .first()
+        .ok_or(ParseError::NoCandidates)?;
 
     for part in &candidate.content.parts {
         if let Some(call) = &part.function_call {
@@ -95,15 +98,17 @@ pub async fn parse_experiment<C: GeminiClient>(
                 FACTOR_SHOCK_FUNCTION => {
                     Experiment::FactorShock(serde_json::from_value::<FactorShockInput>(args)?)
                 }
-                RISK_DECOMPOSITION_FUNCTION => Experiment::RiskDecomposition(serde_json::from_value::<
-                    RiskDecompositionInput,
-                >(args)?),
+                RISK_DECOMPOSITION_FUNCTION => Experiment::RiskDecomposition(
+                    serde_json::from_value::<RiskDecompositionInput>(args)?,
+                ),
                 CVAR_REBALANCE_FUNCTION => {
                     Experiment::CvarRebalance(serde_json::from_value::<CvarRebalanceInput>(args)?)
                 }
-                PORTFOLIO_PERFORMANCE_FUNCTION => Experiment::PortfolioPerformance(
-                    serde_json::from_value::<PortfolioPerformanceInput>(args)?,
-                ),
+                PORTFOLIO_PERFORMANCE_FUNCTION => {
+                    Experiment::PortfolioPerformance(serde_json::from_value::<
+                        PortfolioPerformanceInput,
+                    >(args)?)
+                }
                 RISK_DRIFT_FUNCTION => {
                     Experiment::RiskDrift(serde_json::from_value::<RiskDriftInput>(args)?)
                 }

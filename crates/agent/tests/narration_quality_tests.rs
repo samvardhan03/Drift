@@ -30,7 +30,11 @@ const LEAKED_FIELD_SUFFIXES: &[&str] = &["_pct", "_inr", "_log", "_annualized"];
 
 fn contains_a_leaked_field_name(text: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .any(|word| LEAKED_FIELD_SUFFIXES.iter().any(|suffix| word.ends_with(suffix)))
+        .any(|word| {
+            LEAKED_FIELD_SUFFIXES
+                .iter()
+                .any(|suffix| word.ends_with(suffix))
+        })
 }
 
 /// Captured live via `POST /ask` "How is my portfolio doing?" against a
@@ -59,7 +63,9 @@ fn narration_contains_no_seven_plus_digit_raw_number() {
         "narration should use Indian-notation abbreviations (\u{20b9}X.XL/\u{20b9}X.XCr), never a raw 7+ digit rupee figure"
     );
     // Regression: the detector itself must actually catch a raw figure.
-    assert!(contains_seven_plus_digit_number("your loss is 1195069 rupees"));
+    assert!(contains_seven_plus_digit_number(
+        "your loss is 1195069 rupees"
+    ));
 }
 
 #[test]
@@ -71,9 +77,15 @@ fn narration_contains_no_leaked_field_names() {
     // Regression: the detector itself must actually catch a leaked field
     // name in each of the four suffixes this session's fields use.
     assert!(contains_a_leaked_field_name("total_return_pct was -17.8"));
-    assert!(contains_a_leaked_field_name("portfolio_pnl_inr is negative"));
-    assert!(contains_a_leaked_field_name("portfolio_log_pnl_inr you cited is wrong"));
-    assert!(contains_a_leaked_field_name("portfolio_vol_annualized rose"));
+    assert!(contains_a_leaked_field_name(
+        "portfolio_pnl_inr is negative"
+    ));
+    assert!(contains_a_leaked_field_name(
+        "portfolio_log_pnl_inr you cited is wrong"
+    ));
+    assert!(contains_a_leaked_field_name(
+        "portfolio_vol_annualized rose"
+    ));
 }
 
 /// Suggestions captured live from the same session's `POST /ask` calls
@@ -89,7 +101,10 @@ const LIVE_SUGGESTIONS: &[&str] = &[
 fn suggestions_are_under_15_words_and_are_not_phrased_as_a_question() {
     for suggestion in LIVE_SUGGESTIONS {
         let word_count = suggestion.split_whitespace().count();
-        assert!(word_count < 15, "{suggestion:?} has {word_count} words, expected under 15");
+        assert!(
+            word_count < 15,
+            "{suggestion:?} has {word_count} words, expected under 15"
+        );
         assert!(
             !suggestion.trim_end().ends_with('?'),
             "{suggestion:?} is phrased as a question, expected an imperative action"

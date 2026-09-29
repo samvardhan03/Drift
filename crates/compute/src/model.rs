@@ -332,8 +332,9 @@ fn regime_conditional_factor_covariance(
             // per_regime[regime_idx] already initialized to the full-window F.
             continue;
         }
-        let regime_matrix =
-            DMatrix::from_fn(row_indices.len(), k, |i, j| factors_window[(row_indices[i], j)]);
+        let regime_matrix = DMatrix::from_fn(row_indices.len(), k, |i, j| {
+            factors_window[(row_indices[i], j)]
+        });
         let (f_k, _shrinkage_k) = ledoit_wolf_shrink_identity(&regime_matrix);
         per_regime[regime_idx] = f_k;
     }
@@ -408,8 +409,7 @@ pub fn fit_factor_model(
         let series_start = series.len() - window;
         let y = DVector::from_fn(window, |i, _| series[series_start + i]);
 
-        let (intercept, betas, residual_variance_daily, r_squared) =
-            ols_fit(&y, &factors_window)?;
+        let (intercept, betas, residual_variance_daily, r_squared) = ols_fit(&y, &factors_window)?;
 
         fits.push(StockFit {
             ticker: ticker.clone(),
@@ -474,12 +474,27 @@ mod tests {
         viterbi_sequence.extend(std::iter::repeat_n(2u8, 15));
         assert_eq!(viterbi_sequence.len(), window);
 
-        let (per_regime, warnings) =
-            regime_conditional_factor_covariance(&factors_window, &viterbi_sequence, &full_window_f);
+        let (per_regime, warnings) = regime_conditional_factor_covariance(
+            &factors_window,
+            &viterbi_sequence,
+            &full_window_f,
+        );
 
-        assert_eq!(warnings.len(), 2, "expected exactly 2 fallback warnings, got {warnings:?}");
-        assert!(warnings[0].contains("regime_1") && warnings[0].contains("Bear") && warnings[0].contains("25"));
-        assert!(warnings[1].contains("regime_2") && warnings[1].contains("Crisis") && warnings[1].contains("15"));
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected exactly 2 fallback warnings, got {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("regime_1")
+                && warnings[0].contains("Bear")
+                && warnings[0].contains("25")
+        );
+        assert!(
+            warnings[1].contains("regime_2")
+                && warnings[1].contains("Crisis")
+                && warnings[1].contains("15")
+        );
 
         // Regime 0 (Bull, 60 obs >= 30) should NOT equal the full-window F
         // (it's fit on its own, distinct data); regimes 1 and 2 (fallback)
@@ -497,8 +512,11 @@ mod tests {
         let (full_window_f, _) = ledoit_wolf_shrink_identity(&factors_window);
 
         let viterbi_sequence: Vec<u8> = (0..window).map(|i| (i / 30) as u8).collect();
-        let (_per_regime, warnings) =
-            regime_conditional_factor_covariance(&factors_window, &viterbi_sequence, &full_window_f);
+        let (_per_regime, warnings) = regime_conditional_factor_covariance(
+            &factors_window,
+            &viterbi_sequence,
+            &full_window_f,
+        );
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 }

@@ -20,7 +20,8 @@ fn data_as_of_is_the_data_windows_end_date_as_an_iso8601_utc_timestamp() {
     let value = data_as_of(&sample_data_window());
     assert_eq!(value, "2026-09-24T00:00:00Z");
     // Must parse as a valid RFC 3339 / ISO 8601 timestamp.
-    chrono::DateTime::parse_from_rfc3339(&value).expect("data_as_of must be a valid RFC 3339 timestamp");
+    chrono::DateTime::parse_from_rfc3339(&value)
+        .expect("data_as_of must be a valid RFC 3339 timestamp");
 }
 
 #[test]

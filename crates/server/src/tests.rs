@@ -93,7 +93,8 @@ fn sample_execution_trace() -> agent::AgentExecutionTrace {
         id: "exec-trace-id".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         user_message: "what's my portfolio risk?".to_string(),
-        planning_response_raw: r#"[{"tool":"current_risk","params":{},"reason":"test"}]"#.to_string(),
+        planning_response_raw: r#"[{"tool":"current_risk","params":{},"reason":"test"}]"#
+            .to_string(),
         tool_plans: vec![agent::ToolPlan {
             tool: "current_risk".to_string(),
             params: serde_json::json!({}),
@@ -107,7 +108,11 @@ fn sample_execution_trace() -> agent::AgentExecutionTrace {
             error: None,
         }],
         narration: "Vol is 15.5% annualised.".to_string(),
-        grounding_status: agent::GroundingStatus { passed: true, warnings: vec![], retry_count: 0 },
+        grounding_status: agent::GroundingStatus {
+            passed: true,
+            warnings: vec![],
+            retry_count: 0,
+        },
         suggestion: "What if I reduce my turnover to 20%?".to_string(),
         total_latency_ms: 10,
         gemini_calls: 3,
@@ -140,9 +145,9 @@ impl Backend for MockBackend {
         if let Some(err) = &self.experiment_error {
             return Err(err.clone());
         }
-        self.experiment_result
-            .clone()
-            .ok_or_else(|| BackendError::Internal("no mock experiment result configured".to_string()))
+        self.experiment_result.clone().ok_or_else(|| {
+            BackendError::Internal("no mock experiment result configured".to_string())
+        })
     }
 
     async fn run_ask(
@@ -198,7 +203,9 @@ fn app_with_backend_and_store(backend: MockBackend) -> (axum::Router, Arc<store:
 fn pdf_contains_text(bytes: &[u8], needle: &str) -> bool {
     let doc = lopdf::Document::load_mem(bytes).expect("rendered report should be a valid PDF");
     let page_numbers: Vec<u32> = doc.get_pages().keys().copied().collect();
-    let text = doc.extract_text(&page_numbers).expect("failed to extract text from rendered PDF");
+    let text = doc
+        .extract_text(&page_numbers)
+        .expect("failed to extract text from rendered PDF");
     text.contains(needle)
 }
 
@@ -218,7 +225,12 @@ async fn health_returns_200_and_expected_json() {
     });
 
     let response = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -253,7 +265,9 @@ async fn cors_preflight_on_health_returns_200_with_allow_origin_header() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        response.headers().contains_key("access-control-allow-origin"),
+        response
+            .headers()
+            .contains_key("access-control-allow-origin"),
         "expected an Access-Control-Allow-Origin header on the preflight response, got {:?}",
         response.headers()
     );
@@ -288,7 +302,10 @@ async fn experiment_with_valid_request_returns_a_trace() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["experiment"], "RiskDecomposition");
-    assert_eq!(body["outputs"]["result"]["portfolio_vol_annualized"], 0.1552);
+    assert_eq!(
+        body["outputs"]["result"]["portfolio_vol_annualized"],
+        0.1552
+    );
 }
 
 #[tokio::test]
@@ -381,9 +398,15 @@ async fn ask_with_mocked_pipeline_returns_grounding_warnings() {
     assert_eq!(body["grounding_warnings"].as_array().unwrap().len(), 1);
     assert_eq!(body["experiment"]["type"], "RiskDecomposition");
     assert_eq!(body["assistant_turn"]["role"], "assistant");
-    assert_eq!(body["assistant_turn"]["content"], "Vol is 99% (unverified).");
+    assert_eq!(
+        body["assistant_turn"]["content"],
+        "Vol is 99% (unverified)."
+    );
     assert_eq!(body["suggestion"], "What if I reduce my turnover to 20%?");
-    assert!(body["result_id"].is_string(), "expected a result_id field, got {body:?}");
+    assert!(
+        body["result_id"].is_string(),
+        "expected a result_id field, got {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -491,7 +514,10 @@ async fn report_route_returns_pdf_for_a_result_stored_by_a_prior_ask() {
         .unwrap();
     assert_eq!(ask_response.status(), StatusCode::OK);
     let ask_json = body_json(ask_response).await;
-    let result_id = ask_json["result_id"].as_str().expect("result_id should be a string").to_string();
+    let result_id = ask_json["result_id"]
+        .as_str()
+        .expect("result_id should be a string")
+        .to_string();
 
     let report_response = app
         .oneshot(
@@ -511,7 +537,12 @@ async fn report_route_returns_pdf_for_a_result_stored_by_a_prior_ask() {
         .to_str()
         .unwrap();
     assert_eq!(content_type, "application/pdf");
-    let bytes = report_response.into_body().collect().await.unwrap().to_bytes();
+    let bytes = report_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     assert!(bytes.starts_with(b"%PDF"), "expected a PDF file signature");
     assert!(
         pdf_contains_text(&bytes, "Vol is 15.5% annualised."),
@@ -611,7 +642,10 @@ async fn execution_trace_route_returns_the_trace_stored_by_a_prior_ask() {
         .unwrap();
     assert_eq!(ask_response.status(), StatusCode::OK);
     let ask_body = body_json(ask_response).await;
-    let execution_trace_id = ask_body["agent_execution_trace"]["id"].as_str().unwrap().to_string();
+    let execution_trace_id = ask_body["agent_execution_trace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(ask_body["agent_execution_trace"]["gemini_calls"], 3);
 
     let response = app
@@ -642,7 +676,12 @@ async fn scenarios_route_returns_three_scenarios_with_expected_fields() {
     });
 
     let response = app
-        .oneshot(Request::builder().uri("/scenarios").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/scenarios")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -710,7 +749,11 @@ async fn experiment_still_works_end_to_end_with_snapshot_store() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let recent = store.list_recent(10).unwrap();
-    assert_eq!(recent.len(), 1, "POST /experiment should have inserted exactly one snapshot");
+    assert_eq!(
+        recent.len(),
+        1,
+        "POST /experiment should have inserted exactly one snapshot"
+    );
     let snapshot = &recent[0];
     assert_eq!(snapshot.experiment_type, "RiskDecomposition");
     assert_eq!(snapshot.portfolio_vol_annualized, Some(0.1552));
@@ -718,7 +761,10 @@ async fn experiment_still_works_end_to_end_with_snapshot_store() {
     assert!(snapshot.smoothed_probs.is_some());
 
     let fetched = store.get(&snapshot.id).unwrap();
-    assert!(fetched.is_some(), "the just-inserted snapshot should be retrievable by id");
+    assert!(
+        fetched.is_some(),
+        "the just-inserted snapshot should be retrievable by id"
+    );
 }
 
 #[tokio::test]
@@ -749,7 +795,12 @@ async fn report_route_retrieves_an_experiment_originated_snapshot() {
 
     let id = store.list_recent(1).unwrap()[0].id.clone();
     let response = app
-        .oneshot(Request::builder().uri(format!("/report/{id}")).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/report/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -790,8 +841,14 @@ async fn regime_state_is_non_null_in_every_experiment_response() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert!(!body["model_params"]["regime_state"].is_null(), "regime_state should always be present, got {body:?}");
-    assert_eq!(body["model_params"]["regime_state"]["current_label"], "Bull");
+    assert!(
+        !body["model_params"]["regime_state"].is_null(),
+        "regime_state should always be present, got {body:?}"
+    );
+    assert_eq!(
+        body["model_params"]["regime_state"]["current_label"],
+        "Bull"
+    );
 }
 
 /// Builds a `multipart/form-data` body with a single "file" field, the way
@@ -801,7 +858,8 @@ fn multipart_body(filename: &str, content_type: &str, bytes: &[u8]) -> (String, 
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n").as_bytes(),
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
     );
     body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
     body.extend_from_slice(bytes);
@@ -809,7 +867,12 @@ fn multipart_body(filename: &str, content_type: &str, bytes: &[u8]) -> (String, 
     (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
-async fn upload(app: axum::Router, filename: &str, content_type: &str, bytes: &[u8]) -> axum::response::Response {
+async fn upload(
+    app: axum::Router,
+    filename: &str,
+    content_type: &str,
+    bytes: &[u8],
+) -> axum::response::Response {
     let (content_type_header, body) = multipart_body(filename, content_type, bytes);
     app.oneshot(
         Request::builder()
@@ -836,7 +899,13 @@ fn empty_backend_app() -> axum::Router {
 #[tokio::test]
 async fn upload_weight_based_csv_returns_200_and_correct_portfolio() {
     let csv = "ticker,weight\nRELIANCE.NS,0.6\nTCS.NS,0.4\n";
-    let response = upload(empty_backend_app(), "portfolio.csv", "text/csv", csv.as_bytes()).await;
+    let response = upload(
+        empty_backend_app(),
+        "portfolio.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
@@ -853,14 +922,23 @@ async fn upload_weight_based_csv_returns_200_and_correct_portfolio() {
 #[tokio::test]
 async fn upload_value_based_csv_returns_200_and_weights_sum_to_one() {
     let csv = "ticker,shares,avg_price_inr\nRELIANCE.NS,10,2850.00\nHDFCBANK.NS,25,1640.00\n";
-    let response = upload(empty_backend_app(), "portfolio.csv", "text/csv", csv.as_bytes()).await;
+    let response = upload(
+        empty_backend_app(),
+        "portfolio.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["layout_detected"], "value");
     let holdings = body["portfolio"]["holdings"].as_array().unwrap();
     let sum: f64 = holdings.iter().map(|h| h["weight"].as_f64().unwrap()).sum();
-    assert!((sum - 1.0).abs() < 1e-6, "weights should sum to 1.0 within 1e-6, got {sum}");
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "weights should sum to 1.0 within 1e-6, got {sum}"
+    );
 }
 
 #[tokio::test]
@@ -882,7 +960,13 @@ async fn upload_xlsx_returns_200() {
 
 #[tokio::test]
 async fn upload_unsupported_file_type_returns_400() {
-    let response = upload(empty_backend_app(), "portfolio.txt", "text/plain", b"not a real portfolio file").await;
+    let response = upload(
+        empty_backend_app(),
+        "portfolio.txt",
+        "text/plain",
+        b"not a real portfolio file",
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
@@ -892,7 +976,13 @@ async fn upload_unsupported_file_type_returns_400() {
 #[tokio::test]
 async fn upload_weights_not_summing_to_one_returns_400() {
     let csv = "ticker,weight\nRELIANCE.NS,0.6\nTCS.NS,0.6\n";
-    let response = upload(empty_backend_app(), "portfolio.csv", "text/csv", csv.as_bytes()).await;
+    let response = upload(
+        empty_backend_app(),
+        "portfolio.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
@@ -902,14 +992,25 @@ async fn upload_weights_not_summing_to_one_returns_400() {
 #[tokio::test]
 async fn upload_single_holding_returns_400() {
     let csv = "ticker,weight\nRELIANCE.NS,1.0\n";
-    let response = upload(empty_backend_app(), "portfolio.csv", "text/csv", csv.as_bytes()).await;
+    let response = upload(
+        empty_backend_app(),
+        "portfolio.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
     assert_eq!(body["code"], "invalid_portfolio");
 }
 
-fn sample_risk_drift_trace(vol_before: f64, vol_after: f64, regime_before: &str, regime_after: &str) -> EvidenceTrace {
+fn sample_risk_drift_trace(
+    vol_before: f64,
+    vol_after: f64,
+    regime_before: &str,
+    regime_after: &str,
+) -> EvidenceTrace {
     let mut trace = sample_trace();
     trace.experiment = "RiskDrift".to_string();
     trace.outputs = serde_json::json!({
@@ -926,7 +1027,11 @@ fn sample_risk_drift_trace(vol_before: f64, vol_after: f64, regime_before: &str,
     trace
 }
 
-fn risk_drift_snapshot(portfolio_hash: &str, vol_before: f64, vol_after: f64) -> store::RiskSnapshot {
+fn risk_drift_snapshot(
+    portfolio_hash: &str,
+    vol_before: f64,
+    vol_after: f64,
+) -> store::RiskSnapshot {
     let trace = sample_risk_drift_trace(vol_before, vol_after, "Bull", "Bear");
     store::RiskSnapshot {
         id: String::new(),
@@ -959,7 +1064,9 @@ async fn experiment_risk_drift_with_a_pre_inserted_baseline_returns_200_with_non
         received_conversation_history: Mutex::new(None),
         received_policy: Mutex::new(None),
     });
-    store.insert(&risk_drift_snapshot("baseline-hash", 0.10, 0.12)).unwrap();
+    store
+        .insert(&risk_drift_snapshot("baseline-hash", 0.10, 0.12))
+        .unwrap();
 
     let req_body = serde_json::json!({
         "portfolio": sample_portfolio(),
@@ -1017,7 +1124,10 @@ async fn experiment_risk_drift_with_no_prior_snapshot_returns_422() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response).await;
-    assert!(body["error"].as_str().unwrap().contains("No prior snapshot found"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("No prior snapshot found"));
 }
 
 #[tokio::test]
@@ -1025,7 +1135,12 @@ async fn drift_route_returns_200_and_empty_snapshots_when_none_exist() {
     let app = empty_backend_app();
 
     let response = app
-        .oneshot(Request::builder().uri("/drift?portfolio=unknown-hash").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/drift?portfolio=unknown-hash")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -1043,22 +1158,35 @@ async fn drift_route_returns_summaries_not_full_traces_after_inserting_two_snaps
         received_conversation_history: Mutex::new(None),
         received_policy: Mutex::new(None),
     });
-    store.insert(&risk_drift_snapshot("drift-hash", 0.10, 0.12)).unwrap();
-    store.insert(&risk_drift_snapshot("drift-hash", 0.12, 0.20)).unwrap();
+    store
+        .insert(&risk_drift_snapshot("drift-hash", 0.10, 0.12))
+        .unwrap();
+    store
+        .insert(&risk_drift_snapshot("drift-hash", 0.12, 0.20))
+        .unwrap();
     // A non-RiskDrift snapshot for the same portfolio must be excluded.
     let mut other = risk_drift_snapshot("drift-hash", 0.0, 0.0);
     other.experiment_type = "RiskDecomposition".to_string();
     store.insert(&other).unwrap();
 
     let response = app
-        .oneshot(Request::builder().uri("/drift?portfolio=drift-hash").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/drift?portfolio=drift-hash")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     let snapshots = body["snapshots"].as_array().unwrap();
-    assert_eq!(snapshots.len(), 2, "expected exactly the 2 RiskDrift snapshots, got {snapshots:?}");
+    assert_eq!(
+        snapshots.len(),
+        2,
+        "expected exactly the 2 RiskDrift snapshots, got {snapshots:?}"
+    );
     for snapshot in snapshots {
         assert!(snapshot["id"].is_string());
         assert!(snapshot["created_at"].is_string());
@@ -1127,8 +1255,13 @@ async fn experiment_reverse_stress_with_valid_input_returns_200_with_negative_pn
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["experiment"], "ReverseStress");
-    let pnl = body["outputs"]["result"]["portfolio_pnl_inr"].as_f64().unwrap();
-    assert!(pnl.is_finite() && pnl < 0.0, "expected a present, negative portfolio_pnl_inr, got {pnl}");
+    let pnl = body["outputs"]["result"]["portfolio_pnl_inr"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        pnl.is_finite() && pnl < 0.0,
+        "expected a present, negative portfolio_pnl_inr, got {pnl}"
+    );
 }
 
 #[tokio::test]
@@ -1163,8 +1296,14 @@ async fn experiment_reverse_stress_with_infeasible_threshold_returns_422() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response).await;
-    assert!(body["error"].as_str().unwrap().contains("cannot be breached"));
-    assert!(body["error"].as_str().unwrap().contains("Maximum feasible loss"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be breached"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Maximum feasible loss"));
 }
 
 fn sample_policy_result(all_passed: bool) -> serde_json::Value {
@@ -1234,7 +1373,10 @@ async fn experiment_policy_check_with_a_tight_limit_returns_200_with_all_passed_
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["outputs"]["result"]["policy_result"]["all_passed"], false);
+    assert_eq!(
+        body["outputs"]["result"]["policy_result"]["all_passed"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -1265,8 +1407,14 @@ async fn experiment_policy_check_with_a_loose_limit_returns_200_with_all_passed_
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["outputs"]["result"]["policy_result"]["all_passed"], true);
-    assert_eq!(body["outputs"]["result"]["policy_result"]["breach_count"], 0);
+    assert_eq!(
+        body["outputs"]["result"]["policy_result"]["all_passed"],
+        true
+    );
+    assert_eq!(
+        body["outputs"]["result"]["policy_result"]["breach_count"],
+        0
+    );
 }
 
 #[tokio::test]
@@ -1277,7 +1425,8 @@ async fn experiment_with_an_attached_policy_runs_the_passive_check_and_returns_p
         // RiskDecomposition, not PolicyCheck itself).
         experiment_result: Some({
             let mut trace = sample_trace();
-            trace.policy_result = Some(serde_json::from_value(sample_policy_result(false)).unwrap());
+            trace.policy_result =
+                Some(serde_json::from_value(sample_policy_result(false)).unwrap());
             trace
         }),
         experiment_error: None,

@@ -9,7 +9,9 @@ use chrono::NaiveDate;
 use compute::context::ExperimentContext;
 use compute::data::DataQuality;
 use compute::drift::{compute_risk_drift, run_risk_drift, RiskDriftInput};
-use compute::experiments::{CorrelationMatrix, FactorContribution, Holding, Portfolio, RiskDecompositionOutput};
+use compute::experiments::{
+    CorrelationMatrix, FactorContribution, Holding, Portfolio, RiskDecompositionOutput,
+};
 use compute::model::Frequency;
 use compute::regime::RegimeState;
 use compute::trace::{DataWindow, EvidenceTrace, ModelParams};
@@ -57,7 +59,10 @@ fn risk_decomposition_result(
     regime: RegimeState,
     end_date: NaiveDate,
 ) -> (RiskDecompositionOutput, EvidenceTrace) {
-    let betas: BTreeMap<String, f64> = by_factor.iter().map(|(f, c, _)| (f.to_string(), *c * 2.0)).collect();
+    let betas: BTreeMap<String, f64> = by_factor
+        .iter()
+        .map(|(f, c, _)| (f.to_string(), *c * 2.0))
+        .collect();
     let factor_names: Vec<String> = by_factor.iter().map(|(f, _, _)| f.to_string()).collect();
     let output = RiskDecompositionOutput {
         portfolio_vol_annualized: vol,
@@ -76,7 +81,10 @@ fn risk_decomposition_result(
         specific_risk_fraction_of_vol: specific_risk_fraction,
         specific_risk_fraction_of_vol_pct: specific_risk_fraction * 100.0,
         portfolio_betas: betas,
-        factor_correlation: CorrelationMatrix { factor_names, rows: vec![vec![1.0, 0.1], vec![0.1, 1.0]] },
+        factor_correlation: CorrelationMatrix {
+            factor_names,
+            rows: vec![vec![1.0, 0.1], vec![0.1, 1.0]],
+        },
     };
     let mut data_window = sample_data_window();
     data_window.end = end_date;
@@ -116,8 +124,16 @@ fn baseline_snapshot_from(trace: &EvidenceTrace, vol: f64) -> RiskSnapshot {
         portfolio_hash: "hash".to_string(),
         experiment_type: "RiskDecomposition".to_string(),
         engine_version: "0.1.0".to_string(),
-        regime_label: trace.model_params.regime_state.as_ref().map(|r| r.current_label.to_string()),
-        smoothed_probs: trace.model_params.regime_state.as_ref().map(|r| r.smoothed_probs),
+        regime_label: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.current_label.to_string()),
+        smoothed_probs: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.smoothed_probs),
         portfolio_vol_annualized: Some(vol),
         cvar_historical: None,
         trace_json: serde_json::to_string(trace).unwrap(),
@@ -128,7 +144,11 @@ fn baseline_snapshot_from(trace: &EvidenceTrace, vol: f64) -> RiskSnapshot {
 }
 
 fn default_input() -> RiskDriftInput {
-    RiskDriftInput { baseline_snapshot_id: None, window: None, frequency: None }
+    RiskDriftInput {
+        baseline_snapshot_id: None,
+        window: None,
+        frequency: None,
+    }
 }
 
 #[test]
@@ -150,12 +170,21 @@ fn vol_change_abs_and_pct_are_computed_correctly() {
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
 
-    let (output, _trace) = compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
+    let (output, _trace) =
+        compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
 
     assert!((output.vol_before - 0.10).abs() < 1e-12);
     assert!((output.vol_after - 0.15).abs() < 1e-12);
-    assert!((output.vol_change_abs - 0.05).abs() < 1e-9, "got {}", output.vol_change_abs);
-    assert!((output.vol_change_pct - 50.0).abs() < 1e-6, "got {}", output.vol_change_pct);
+    assert!(
+        (output.vol_change_abs - 0.05).abs() < 1e-9,
+        "got {}",
+        output.vol_change_abs
+    );
+    assert!(
+        (output.vol_change_pct - 50.0).abs() < 1e-6,
+        "got {}",
+        output.vol_change_pct
+    );
     assert!(output.vol_increased);
     assert_eq!(output.days_elapsed, 30);
 }
@@ -184,7 +213,8 @@ fn factor_contribution_delta_residual_is_recorded_not_errored_when_it_does_not_s
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
 
-    let (output, trace) = compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
+    let (output, trace) =
+        compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
 
     let euler_sum: f64 = output.factor_contribution_delta.values().sum();
     assert!((euler_sum - 0.02).abs() < 1e-9);
@@ -195,7 +225,10 @@ fn factor_contribution_delta_residual_is_recorded_not_errored_when_it_does_not_s
         .iter()
         .find(|i| i.name.contains("vol_change_abs"))
         .expect("residual invariant should always be recorded");
-    assert!(!residual_invariant.passed, "residual should be recorded as failed, not silently dropped");
+    assert!(
+        !residual_invariant.passed,
+        "residual should be recorded as failed, not silently dropped"
+    );
 }
 
 #[test]
@@ -216,11 +249,15 @@ fn regime_changed_is_true_when_regimes_differ_false_when_same() {
         sample_regime_state(1, "Bear", [0.1, 0.8, 0.1]),
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
-    let (output, _) = compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
+    let (output, _) =
+        compute_risk_drift(&baseline, current_output, current_trace, &default_input()).unwrap();
     assert!(output.regime_changed);
     assert_eq!(output.regime_before, "Bull");
     assert_eq!(output.regime_after, "Bear");
-    assert!(output.regime_worsened, "Bull -> Bear should count as worsened");
+    assert!(
+        output.regime_worsened,
+        "Bull -> Bear should count as worsened"
+    );
 
     let (current_output_same, current_trace_same) = risk_decomposition_result(
         0.11,
@@ -229,8 +266,13 @@ fn regime_changed_is_true_when_regimes_differ_false_when_same() {
         sample_regime_state(0, "Bull", [0.85, 0.1, 0.05]),
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
-    let (output_same, _) =
-        compute_risk_drift(&baseline, current_output_same, current_trace_same, &default_input()).unwrap();
+    let (output_same, _) = compute_risk_drift(
+        &baseline,
+        current_output_same,
+        current_trace_same,
+        &default_input(),
+    )
+    .unwrap();
     assert!(!output_same.regime_changed);
     assert!(!output_same.regime_worsened);
 }
@@ -254,8 +296,13 @@ fn risk_became_more_concentrated_uses_a_5pp_threshold() {
         sample_regime_state(0, "Bull", [0.9, 0.1, 0.0]),
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
-    let (output_more, _) =
-        compute_risk_drift(&baseline, current_more_concentrated, current_trace_more, &default_input()).unwrap();
+    let (output_more, _) = compute_risk_drift(
+        &baseline,
+        current_more_concentrated,
+        current_trace_more,
+        &default_input(),
+    )
+    .unwrap();
     assert!(output_more.risk_became_more_concentrated);
 
     // 50% -> 52%: only a 2pp increase, below the threshold.
@@ -266,17 +313,31 @@ fn risk_became_more_concentrated_uses_a_5pp_threshold() {
         sample_regime_state(0, "Bull", [0.9, 0.1, 0.0]),
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
     );
-    let (output_similar, _) =
-        compute_risk_drift(&baseline, current_similar, current_trace_similar, &default_input()).unwrap();
+    let (output_similar, _) = compute_risk_drift(
+        &baseline,
+        current_similar,
+        current_trace_similar,
+        &default_input(),
+    )
+    .unwrap();
     assert!(!output_similar.risk_became_more_concentrated);
 }
 
 #[test]
 fn no_baseline_snapshot_id_with_no_prior_snapshot_returns_no_prior_snapshot_error() {
     let store = Arc::new(SnapshotStore::open(":memory:").unwrap());
-    let ctx = ExperimentContext { store, portfolio_hash: "empty-hash".to_string(), policy: None };
-    let portfolio =
-        Portfolio { holdings: vec![Holding { ticker: "AAA".to_string(), weight: 1.0 }], total_value_inr: 1.0 };
+    let ctx = ExperimentContext {
+        store,
+        portfolio_hash: "empty-hash".to_string(),
+        policy: None,
+    };
+    let portfolio = Portfolio {
+        holdings: vec![Holding {
+            ticker: "AAA".to_string(),
+            weight: 1.0,
+        }],
+        total_value_inr: 1.0,
+    };
 
     let result = run_risk_drift(
         std::path::Path::new("data/cache"),
@@ -287,7 +348,10 @@ fn no_baseline_snapshot_id_with_no_prior_snapshot_returns_no_prior_snapshot_erro
 
     match result {
         Err(ComputeError::NoPriorSnapshot(msg)) => {
-            assert!(msg.contains("No prior snapshot found"), "unexpected message: {msg}");
+            assert!(
+                msg.contains("No prior snapshot found"),
+                "unexpected message: {msg}"
+            );
         }
         other => panic!("expected ComputeError::NoPriorSnapshot, got {other:?}"),
     }

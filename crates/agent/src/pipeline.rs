@@ -82,7 +82,11 @@ pub async fn run<C: GeminiClient>(
     let ctx_for_tools = ctx.clone();
     let tool_plans_for_compute = tool_plans.clone();
     let (traces, tool_results) = tokio::task::spawn_blocking(move || {
-        run_tool_plans(&tool_plans_for_compute, &portfolio_for_tools, &ctx_for_tools)
+        run_tool_plans(
+            &tool_plans_for_compute,
+            &portfolio_for_tools,
+            &ctx_for_tools,
+        )
     })
     .await
     .expect("run_tool_plans task panicked");
@@ -92,7 +96,11 @@ pub async fn run<C: GeminiClient>(
         return Err(PipelineError::AllToolsFailed(errors));
     }
 
-    let summary = traces.iter().map(experiment_summary).collect::<Vec<_>>().join(" ");
+    let summary = traces
+        .iter()
+        .map(experiment_summary)
+        .collect::<Vec<_>>()
+        .join(" ");
     let (narration_result, suggestion_result) = tokio::join!(
         crate::grounding::grounded_narrate_many(client, &traces, conversation_history),
         suggest_follow_up(client, &summary),
@@ -147,7 +155,10 @@ pub async fn run<C: GeminiClient>(
 /// alias -- the trace itself is the authoritative record either way.
 fn experiment_from_trace(trace: &EvidenceTrace) -> Result<Experiment, PipelineError> {
     let mut map = trace.inputs.as_object().cloned().unwrap_or_default();
-    map.insert("type".to_string(), serde_json::Value::String(trace.experiment.clone()));
+    map.insert(
+        "type".to_string(),
+        serde_json::Value::String(trace.experiment.clone()),
+    );
     serde_json::from_value(serde_json::Value::Object(map))
         .map_err(|e| PipelineError::Compute(compute::ComputeError::InvalidInput(e.to_string())))
 }

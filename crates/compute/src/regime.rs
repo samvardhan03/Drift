@@ -97,7 +97,9 @@ impl<'de> Deserialize<'de> for RegimeState {
             .iter()
             .find(|&&label| label == owned.current_label)
             .copied()
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown regime label {:?}", owned.current_label)))?;
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown regime label {:?}", owned.current_label))
+            })?;
         Ok(RegimeState {
             current_regime: owned.current_regime,
             current_label,
@@ -192,8 +194,7 @@ fn kmeans_init(data: &[f64]) -> ([f64; N_STATES], [f64; N_STATES]) {
         var_sums[k] += (x - means[k]).powi(2);
     }
     let overall_mean: f64 = data.iter().sum::<f64>() / n as f64;
-    let overall_var: f64 =
-        data.iter().map(|x| (x - overall_mean).powi(2)).sum::<f64>() / n as f64;
+    let overall_var: f64 = data.iter().map(|x| (x - overall_mean).powi(2)).sum::<f64>() / n as f64;
     let mut variances = [0.0; N_STATES];
     for k in 0..N_STATES {
         variances[k] = if counts[k] > 1 {
@@ -233,7 +234,9 @@ fn forward(
 
     for t in 1..t_n {
         for k in 0..N_STATES {
-            let predicted: f64 = (0..N_STATES).map(|j| alpha[t - 1][j] * transition[j][k]).sum();
+            let predicted: f64 = (0..N_STATES)
+                .map(|j| alpha[t - 1][j] * transition[j][k])
+                .sum();
             alpha[t][k] = predicted * gaussian_pdf(data[t], means[k], variances[k]);
         }
         c[t] = alpha[t].iter().sum::<f64>().max(PROB_FLOOR);
@@ -264,7 +267,11 @@ fn backward(
     for t in (0..t_n - 1).rev() {
         for k in 0..N_STATES {
             let s: f64 = (0..N_STATES)
-                .map(|j| transition[k][j] * gaussian_pdf(data[t + 1], means[j], variances[j]) * beta[t + 1][j])
+                .map(|j| {
+                    transition[k][j]
+                        * gaussian_pdf(data[t + 1], means[j], variances[j])
+                        * beta[t + 1][j]
+                })
                 .sum();
             beta[t][k] = s / c[t + 1];
         }
@@ -331,7 +338,12 @@ fn e_step(
 fn m_step(
     data: &[f64],
     e: &EStepResult,
-) -> ([f64; N_STATES], [[f64; N_STATES]; N_STATES], [f64; N_STATES], [f64; N_STATES]) {
+) -> (
+    [f64; N_STATES],
+    [[f64; N_STATES]; N_STATES],
+    [f64; N_STATES],
+    [f64; N_STATES],
+) {
     let t_n = data.len();
 
     let mut initial = [0.0; N_STATES];
@@ -393,8 +405,10 @@ fn viterbi(
     let mut psi = vec![[0usize; N_STATES]; t_n];
 
     for k in 0..N_STATES {
-        delta[0][k] =
-            initial[k].max(PROB_FLOOR).ln() + gaussian_pdf(data[0], means[k], variances[k]).max(PROB_FLOOR).ln();
+        delta[0][k] = initial[k].max(PROB_FLOOR).ln()
+            + gaussian_pdf(data[0], means[k], variances[k])
+                .max(PROB_FLOOR)
+                .ln();
     }
 
     for t in 1..t_n {
@@ -408,7 +422,9 @@ fn viterbi(
                     best_j = j;
                 }
             }
-            let emit = gaussian_pdf(data[t], means[k], variances[k]).max(PROB_FLOOR).ln();
+            let emit = gaussian_pdf(data[t], means[k], variances[k])
+                .max(PROB_FLOOR)
+                .ln();
             delta[t][k] = best_val.max(ln_floor) + emit;
             psi[t][k] = best_j;
         }
@@ -457,7 +473,15 @@ pub fn fit_hmm(nsei_returns: &[f64]) -> Result<(HmmModel, RegimeState)> {
         let (alpha, c) = forward(nsei_returns, &initial, &transition, &means, &variances);
         let ll: f64 = c.iter().map(|v| v.ln()).sum();
         let beta = backward(nsei_returns, &transition, &means, &variances, &c);
-        let e = e_step(nsei_returns, &alpha, &beta, &transition, &means, &variances, &c);
+        let e = e_step(
+            nsei_returns,
+            &alpha,
+            &beta,
+            &transition,
+            &means,
+            &variances,
+            &c,
+        );
         let (new_initial, new_transition, new_means, new_variances) = m_step(nsei_returns, &e);
 
         n_iter = iter;
@@ -478,9 +502,21 @@ pub fn fit_hmm(nsei_returns: &[f64]) -> Result<(HmmModel, RegimeState)> {
     // gamma (for smoothed_probs), and the Viterbi path all reflect the
     // same model that's actually being returned.
     let (alpha, c) = forward(nsei_returns, &initial, &transition, &means, &variances);
-    final_ll = c.iter().map(|v| v.ln()).sum::<f64>().max(final_ll.min(f64::MAX));
+    final_ll = c
+        .iter()
+        .map(|v| v.ln())
+        .sum::<f64>()
+        .max(final_ll.min(f64::MAX));
     let beta = backward(nsei_returns, &transition, &means, &variances, &c);
-    let e = e_step(nsei_returns, &alpha, &beta, &transition, &means, &variances, &c);
+    let e = e_step(
+        nsei_returns,
+        &alpha,
+        &beta,
+        &transition,
+        &means,
+        &variances,
+        &c,
+    );
     let viterbi_path = viterbi(nsei_returns, &initial, &transition, &means, &variances);
 
     // Relabel by ascending variance.
@@ -495,13 +531,15 @@ pub fn fit_hmm(nsei_returns: &[f64]) -> Result<(HmmModel, RegimeState)> {
     let sorted_means: [f64; N_STATES] = std::array::from_fn(|new_k| means[order[new_k]]);
     let sorted_variances: [f64; N_STATES] = std::array::from_fn(|new_k| variances[order[new_k]]);
     let sorted_initial: [f64; N_STATES] = std::array::from_fn(|new_k| initial[order[new_k]]);
-    let sorted_transition: [[f64; N_STATES]; N_STATES] =
-        std::array::from_fn(|new_j| std::array::from_fn(|new_k| transition[order[new_j]][order[new_k]]));
+    let sorted_transition: [[f64; N_STATES]; N_STATES] = std::array::from_fn(|new_j| {
+        std::array::from_fn(|new_k| transition[order[new_j]][order[new_k]])
+    });
 
     let t_n = nsei_returns.len();
     // `order[new_k] = old_k`, so this reindexes the final gamma row from
     // old (fit-time) state indices into the sorted Bull/Bear/Crisis order.
-    let smoothed_probs: [f64; N_STATES] = std::array::from_fn(|new_k| e.gamma[t_n - 1][order[new_k]]);
+    let smoothed_probs: [f64; N_STATES] =
+        std::array::from_fn(|new_k| e.gamma[t_n - 1][order[new_k]]);
 
     let viterbi_sequence: Vec<u8> = viterbi_path.iter().map(|&old| rank[old] as u8).collect();
     let mut obs_count_per_regime = [0usize; N_STATES];
@@ -571,7 +609,13 @@ mod tests {
     fn gamma_sums_to_one_at_every_t() {
         let data = synthetic_returns(1);
         let (model, _state) = fit_hmm(&data).unwrap();
-        let (alpha, c) = forward(&data, &model.initial, &model.transition, &model.means, &model.variances);
+        let (alpha, c) = forward(
+            &data,
+            &model.initial,
+            &model.transition,
+            &model.means,
+            &model.variances,
+        );
         let beta = backward(&data, &model.transition, &model.means, &model.variances, &c);
         for t in 0..data.len() {
             let sum: f64 = (0..N_STATES).map(|k| alpha[t][k] * beta[t][k]).sum();
@@ -590,7 +634,10 @@ mod tests {
         // Segment 0..100 should be mostly Bull (0), 100..200 mostly Bear
         // (1), 200..300 mostly Crisis (2).
         for (segment, expected) in [(0..100, 0u8), (100..200, 1u8), (200..300, 2u8)] {
-            let correct = segment.clone().filter(|&i| state.viterbi_sequence[i] == expected).count();
+            let correct = segment
+                .clone()
+                .filter(|&i| state.viterbi_sequence[i] == expected)
+                .count();
             let accuracy = correct as f64 / segment.len() as f64;
             assert!(
                 accuracy > 0.85,

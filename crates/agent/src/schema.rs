@@ -301,7 +301,10 @@ mod tests {
             Value::Object(map) => {
                 assert!(!map.contains_key("$schema"), "found $schema: {value}");
                 assert!(!map.contains_key("$ref"), "found $ref: {value}");
-                assert!(!map.contains_key("definitions"), "found definitions: {value}");
+                assert!(
+                    !map.contains_key("definitions"),
+                    "found definitions: {value}"
+                );
                 assert!(!map.contains_key("$defs"), "found $defs: {value}");
                 assert!(
                     !map.contains_key("additionalProperties"),

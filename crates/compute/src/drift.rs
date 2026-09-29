@@ -154,16 +154,16 @@ pub fn compute_risk_drift(
     }
 
     // --- "before" extraction from the baseline trace's stored JSON ---
-    let baseline_result = baseline_trace
-        .outputs
-        .get("result")
-        .ok_or_else(|| ComputeError::InvalidInput("baseline trace has no outputs.result".to_string()))?;
+    let baseline_result = baseline_trace.outputs.get("result").ok_or_else(|| {
+        ComputeError::InvalidInput("baseline trace has no outputs.result".to_string())
+    })?;
     let vol_before = required_f64(baseline_result, "portfolio_vol_annualized")?;
     let factor_contributions_before = factor_field_map(baseline_result, "contribution")?;
     let fraction_of_vol_before = factor_field_map(baseline_result, "fraction_of_vol")?;
     let portfolio_betas_before = betas_map(baseline_result.get("portfolio_betas"));
     let correlation_before = correlation_map_from_json(baseline_result.get("factor_correlation"));
-    let specific_risk_share_before = required_f64(baseline_result, "specific_risk_fraction_of_vol")?;
+    let specific_risk_share_before =
+        required_f64(baseline_result, "specific_risk_fraction_of_vol")?;
 
     if portfolio_betas_before.is_empty() || correlation_before.is_empty() {
         return Err(ComputeError::InvalidInput(format!(
@@ -177,19 +177,29 @@ pub fn compute_risk_drift(
         .model_params
         .regime_state
         .clone()
-        .ok_or_else(|| ComputeError::InvalidInput("baseline trace has no regime_state".to_string()))?;
+        .ok_or_else(|| {
+            ComputeError::InvalidInput("baseline trace has no regime_state".to_string())
+        })?;
     let current_regime = current_trace
         .model_params
         .regime_state
         .clone()
-        .ok_or_else(|| ComputeError::InvalidInput("current trace has no regime_state".to_string()))?;
+        .ok_or_else(|| {
+            ComputeError::InvalidInput("current trace has no regime_state".to_string())
+        })?;
 
     // --- "after" values, straight from the typed current output ---
     let vol_after = current_output.portfolio_vol_annualized;
-    let factor_contributions_after: BTreeMap<String, f64> =
-        current_output.by_factor.iter().map(|f| (f.factor.clone(), f.contribution)).collect();
-    let fraction_of_vol_after: BTreeMap<String, f64> =
-        current_output.by_factor.iter().map(|f| (f.factor.clone(), f.fraction_of_vol)).collect();
+    let factor_contributions_after: BTreeMap<String, f64> = current_output
+        .by_factor
+        .iter()
+        .map(|f| (f.factor.clone(), f.contribution))
+        .collect();
+    let fraction_of_vol_after: BTreeMap<String, f64> = current_output
+        .by_factor
+        .iter()
+        .map(|f| (f.factor.clone(), f.fraction_of_vol))
+        .collect();
     let portfolio_betas_after = current_output.portfolio_betas.clone();
     let correlation_after = correlation_map_from_matrix(&current_output.factor_correlation);
     let specific_risk_share_after = current_output.specific_risk_fraction_of_vol;
@@ -198,9 +208,14 @@ pub fn compute_risk_drift(
 
     // --- Deltas ---
     let vol_change_abs = vol_after - vol_before;
-    let vol_change_pct = if vol_before != 0.0 { (vol_after / vol_before - 1.0) * 100.0 } else { 0.0 };
+    let vol_change_pct = if vol_before != 0.0 {
+        (vol_after / vol_before - 1.0) * 100.0
+    } else {
+        0.0
+    };
 
-    let factor_contribution_delta = delta_map(&factor_contributions_before, &factor_contributions_after);
+    let factor_contribution_delta =
+        delta_map(&factor_contributions_before, &factor_contributions_after);
     let (largest_contribution_increase, largest_contribution_decrease) =
         largest_and_smallest(&factor_contribution_delta)?;
 
@@ -210,12 +225,21 @@ pub fn compute_risk_drift(
 
     let specific_risk_share_delta = specific_risk_share_after - specific_risk_share_before;
 
-    let max_share_before = fraction_of_vol_before.values().copied().fold(f64::MIN, f64::max);
-    let max_share_after = fraction_of_vol_after.values().copied().fold(f64::MIN, f64::max);
+    let max_share_before = fraction_of_vol_before
+        .values()
+        .copied()
+        .fold(f64::MIN, f64::max);
+    let max_share_after = fraction_of_vol_after
+        .values()
+        .copied()
+        .fold(f64::MIN, f64::max);
     let risk_became_more_concentrated = (max_share_after - max_share_before) > 0.05;
 
     let regime_changed = regime_before != regime_after;
-    let regime_worsened = match (regime_severity(&regime_before), regime_severity(&regime_after)) {
+    let regime_worsened = match (
+        regime_severity(&regime_before),
+        regime_severity(&regime_after),
+    ) {
         (Some(b), Some(a)) => a > b,
         _ => false,
     };
@@ -278,7 +302,11 @@ pub fn compute_risk_drift(
         window_periods: baseline_trace.model_params.window_periods,
         frequency: baseline_trace.model_params.frequency,
         shrinkage_intensity: baseline_trace.model_params.shrinkage_intensity,
-        regime_label: baseline_trace.model_params.regime_state.as_ref().map(|r| r.current_label.to_string()),
+        regime_label: baseline_trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.current_label.to_string()),
     });
 
     let trace = EvidenceTrace {
@@ -325,10 +353,9 @@ fn resolve_baseline(
 ) -> Result<store::RiskSnapshot> {
     match &input.baseline_snapshot_id {
         Some(id) => {
-            let snapshot = ctx
-                .store
-                .get(id)?
-                .ok_or_else(|| ComputeError::NoPriorSnapshot(format!("no stored snapshot found for id {id:?}")))?;
+            let snapshot = ctx.store.get(id)?.ok_or_else(|| {
+                ComputeError::NoPriorSnapshot(format!("no stored snapshot found for id {id:?}"))
+            })?;
             if snapshot.portfolio_hash != ctx.portfolio_hash {
                 return Err(ComputeError::InvalidInput(format!(
                     "snapshot {id} belongs to a different portfolio than the current request"
@@ -362,17 +389,17 @@ fn factor_field_map(result: &Value, field: &str) -> Result<BTreeMap<String, f64>
     let arr = result
         .get("by_factor")
         .and_then(Value::as_array)
-        .ok_or_else(|| ComputeError::InvalidInput("baseline trace is missing by_factor".to_string()))?;
+        .ok_or_else(|| {
+            ComputeError::InvalidInput("baseline trace is missing by_factor".to_string())
+        })?;
     arr.iter()
         .map(|entry| {
-            let factor = entry
-                .get("factor")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ComputeError::InvalidInput("by_factor entry missing \"factor\"".to_string()))?;
-            let value = entry
-                .get(field)
-                .and_then(Value::as_f64)
-                .ok_or_else(|| ComputeError::InvalidInput(format!("by_factor entry missing {field:?}")))?;
+            let factor = entry.get("factor").and_then(Value::as_str).ok_or_else(|| {
+                ComputeError::InvalidInput("by_factor entry missing \"factor\"".to_string())
+            })?;
+            let value = entry.get(field).and_then(Value::as_f64).ok_or_else(|| {
+                ComputeError::InvalidInput(format!("by_factor entry missing {field:?}"))
+            })?;
             Ok((factor.to_string(), value))
         })
         .collect()
@@ -383,16 +410,26 @@ fn factor_field_map(result: &Value, field: &str) -> Result<BTreeMap<String, f64>
 fn betas_map(value: Option<&Value>) -> BTreeMap<String, f64> {
     value
         .and_then(Value::as_object)
-        .map(|obj| obj.iter().filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f))).collect())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn correlation_map_from_json(value: Option<&Value>) -> BTreeMap<String, f64> {
-    let Some(value) = value else { return BTreeMap::new() };
+    let Some(value) = value else {
+        return BTreeMap::new();
+    };
     let names: Vec<String> = value
         .get("factor_names")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let Some(rows) = value.get("rows").and_then(Value::as_array) else {
         return BTreeMap::new();
@@ -400,7 +437,12 @@ fn correlation_map_from_json(value: Option<&Value>) -> BTreeMap<String, f64> {
     let mut map = BTreeMap::new();
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
-            if let Some(v) = rows.get(i).and_then(Value::as_array).and_then(|r| r.get(j)).and_then(Value::as_f64) {
+            if let Some(v) = rows
+                .get(i)
+                .and_then(Value::as_array)
+                .and_then(|r| r.get(j))
+                .and_then(Value::as_f64)
+            {
                 map.insert(format!("{}:{}", names[i], names[j]), v);
             }
         }
@@ -413,13 +455,19 @@ fn correlation_map_from_matrix(m: &CorrelationMatrix) -> BTreeMap<String, f64> {
     let n = m.factor_names.len();
     for i in 0..n {
         for j in (i + 1)..n {
-            map.insert(format!("{}:{}", m.factor_names[i], m.factor_names[j]), m.rows[i][j]);
+            map.insert(
+                format!("{}:{}", m.factor_names[i], m.factor_names[j]),
+                m.rows[i][j],
+            );
         }
     }
     map
 }
 
-fn delta_map(before: &BTreeMap<String, f64>, after: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
+fn delta_map(
+    before: &BTreeMap<String, f64>,
+    after: &BTreeMap<String, f64>,
+) -> BTreeMap<String, f64> {
     let mut keys: std::collections::BTreeSet<&String> = before.keys().collect();
     keys.extend(after.keys());
     keys.into_iter()
@@ -432,18 +480,31 @@ fn delta_map(before: &BTreeMap<String, f64>, after: &BTreeMap<String, f64>) -> B
 }
 
 fn largest_and_smallest(delta: &BTreeMap<String, f64>) -> Result<(String, String)> {
-    let largest = delta.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(k, _)| k.clone());
-    let smallest = delta.iter().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(k, _)| k.clone());
+    let largest = delta
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(k, _)| k.clone());
+    let smallest = delta
+        .iter()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(k, _)| k.clone());
     match (largest, smallest) {
         (Some(l), Some(s)) => Ok((l, s)),
-        _ => Err(ComputeError::InvalidInput("no factor contributions to compare".to_string())),
+        _ => Err(ComputeError::InvalidInput(
+            "no factor contributions to compare".to_string(),
+        )),
     }
 }
 
 fn largest_by_abs(delta: &BTreeMap<String, f64>) -> Option<String> {
-    delta.iter().max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap()).map(|(k, _)| k.clone())
+    delta
+        .iter()
+        .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+        .map(|(k, _)| k.clone())
 }
 
 fn regime_severity(label: &str) -> Option<usize> {
-    crate::regime::REGIME_LABELS.iter().position(|&l| l == label)
+    crate::regime::REGIME_LABELS
+        .iter()
+        .position(|&l| l == label)
 }

@@ -33,7 +33,8 @@ pub struct PortfolioPerformanceInput {
 
 impl PortfolioPerformanceInput {
     pub fn resolved_window(&self) -> usize {
-        self.window.unwrap_or_else(|| self.frequency.default_window())
+        self.window
+            .unwrap_or_else(|| self.frequency.default_window())
     }
 }
 
@@ -104,9 +105,15 @@ pub struct HoldingPerformance {
 /// `run_portfolio_performance` -- same constant-mix-irrelevant math as the
 /// portfolio level (a single holding has no rebalancing to simplify away),
 /// just applied to one series instead of the weighted sum of all of them.
-fn holding_performance(series: &[f64], start: usize, window: usize, ann_factor: f64) -> (f64, f64, f64) {
-    let period_returns: Vec<f64> =
-        (0..window).map(|s| log_to_simple(series[start + s])).collect();
+fn holding_performance(
+    series: &[f64],
+    start: usize,
+    window: usize,
+    ann_factor: f64,
+) -> (f64, f64, f64) {
+    let period_returns: Vec<f64> = (0..window)
+        .map(|s| log_to_simple(series[start + s]))
+        .collect();
 
     let mut cumulative = 1.0_f64;
     let mut peak = 1.0_f64;
@@ -119,7 +126,10 @@ fn holding_performance(series: &[f64], start: usize, window: usize, ann_factor: 
     let total_return = cumulative - 1.0;
 
     let mean_r: f64 = period_returns.iter().sum::<f64>() / window as f64;
-    let variance: f64 = period_returns.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>()
+    let variance: f64 = period_returns
+        .iter()
+        .map(|r| (r - mean_r).powi(2))
+        .sum::<f64>()
         / (window.max(2) - 1) as f64;
     let annualized_vol = (variance * ann_factor).sqrt();
 
@@ -193,7 +203,10 @@ pub fn run_portfolio_performance(
     let annualized_return = (1.0 + total_return).powf(ann_factor / window as f64) - 1.0;
 
     let mean_r: f64 = period_returns.iter().sum::<f64>() / window as f64;
-    let variance: f64 = period_returns.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>()
+    let variance: f64 = period_returns
+        .iter()
+        .map(|r| (r - mean_r).powi(2))
+        .sum::<f64>()
         / (window.max(2) - 1) as f64;
     let annualized_vol_realized = (variance * ann_factor).sqrt();
 
@@ -208,7 +221,9 @@ pub fn run_portfolio_performance(
     let nsei_window: Option<&Vec<f64>> = data.factor_returns.get("MARKET");
     let regime_state = nsei_window.and_then(|series| {
         let series_start = series.len().checked_sub(window)?;
-        regime::fit_hmm(&series[series_start..]).ok().map(|(_, state)| state)
+        regime::fit_hmm(&series[series_start..])
+            .ok()
+            .map(|(_, state)| state)
     });
     let regime_label = regime_state.as_ref().map(|s| s.current_label.to_string());
 
@@ -236,14 +251,18 @@ pub fn run_portfolio_performance(
     let best_performer = tickers
         .iter()
         .max_by(|a, b| {
-            holding_returns[*a].total_return_pct.total_cmp(&holding_returns[*b].total_return_pct)
+            holding_returns[*a]
+                .total_return_pct
+                .total_cmp(&holding_returns[*b].total_return_pct)
         })
         .expect("tickers is non-empty")
         .clone();
     let worst_performer = tickers
         .iter()
         .min_by(|a, b| {
-            holding_returns[*a].total_return_pct.total_cmp(&holding_returns[*b].total_return_pct)
+            holding_returns[*a]
+                .total_return_pct
+                .total_cmp(&holding_returns[*b].total_return_pct)
         })
         .expect("tickers is non-empty")
         .clone();

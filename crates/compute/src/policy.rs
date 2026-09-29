@@ -117,7 +117,11 @@ pub fn max_factor_contribution_share(portfolio: &Portfolio, model: &FactorModel)
     let mut best_name = factor_names[0].to_string();
     let mut best_share = f64::MIN;
     for (i, name) in factor_names.iter().enumerate() {
-        let share = if vol > 0.0 { (x[i] * fx[i] / vol) / vol } else { 0.0 };
+        let share = if vol > 0.0 {
+            (x[i] * fx[i] / vol) / vol
+        } else {
+            0.0
+        };
         if share > best_share {
             best_share = share;
             best_name = name.to_string();
@@ -127,7 +131,11 @@ pub fn max_factor_contribution_share(portfolio: &Portfolio, model: &FactorModel)
 }
 
 pub fn max_position_weight(portfolio: &Portfolio) -> f64 {
-    portfolio.holdings.iter().map(|h| h.weight).fold(f64::MIN, f64::max)
+    portfolio
+        .holdings
+        .iter()
+        .map(|h| h.weight)
+        .fold(f64::MIN, f64::max)
 }
 
 /// Historical CVaR at 95% confidence, computed directly from the
@@ -150,8 +158,9 @@ pub fn portfolio_cvar_95(portfolio: &Portfolio, data: &MarketData) -> Result<f64
 
     let mut losses: Vec<f64> = (0..scenario_count)
         .map(|s| {
-            let portfolio_return: f64 =
-                (0..tickers.len()).map(|i| w[i] * log_to_simple(series[i][s])).sum();
+            let portfolio_return: f64 = (0..tickers.len())
+                .map(|i| w[i] * log_to_simple(series[i][s]))
+                .sum();
             -portfolio_return
         })
         .collect();
@@ -173,10 +182,15 @@ pub fn scenario_loss_pct(
     let scenario = crate::scenarios::all_scenarios()
         .iter()
         .find(|s| s.id == scenario_id)
-        .ok_or_else(|| ComputeError::InvalidInput(format!("unknown scenario id {scenario_id:?}")))?;
+        .ok_or_else(|| {
+            ComputeError::InvalidInput(format!("unknown scenario id {scenario_id:?}"))
+        })?;
 
-    let shocks_pct: BTreeMap<String, f64> =
-        scenario.shocks_pct.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+    let shocks_pct: BTreeMap<String, f64> = scenario
+        .shocks_pct
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
     let input = FactorShockInput {
         portfolio: portfolio.clone(),
         shocks_pct,
@@ -205,7 +219,11 @@ pub fn evaluate_policy(
             "max_vol_annualized",
             limit,
             vol,
-            format!("Portfolio annualized volatility is {} (limit: {})", pct(vol), pct(limit)),
+            format!(
+                "Portfolio annualized volatility is {} (limit: {})",
+                pct(vol),
+                pct(limit)
+            ),
         ));
     }
 
@@ -215,7 +233,11 @@ pub fn evaluate_policy(
             "max_cvar_95",
             limit,
             cvar,
-            format!("Portfolio historical CVaR (95%) is {} (limit: {})", pct(cvar), pct(limit)),
+            format!(
+                "Portfolio historical CVaR (95%) is {} (limit: {})",
+                pct(cvar),
+                pct(limit)
+            ),
         ));
     }
 
@@ -225,7 +247,11 @@ pub fn evaluate_policy(
             "max_factor_contribution_share",
             limit,
             share,
-            format!("{factor} factor contributes {} of vol (limit: {})", pct(share), pct(limit)),
+            format!(
+                "{factor} factor contributes {} of vol (limit: {})",
+                pct(share),
+                pct(limit)
+            ),
         ));
     }
 
@@ -241,7 +267,11 @@ pub fn evaluate_policy(
             "max_position_weight",
             limit,
             weight,
-            format!("Largest position ({ticker}) is {} of portfolio (limit: {})", pct(weight), pct(limit)),
+            format!(
+                "Largest position ({ticker}) is {} of portfolio (limit: {})",
+                pct(weight),
+                pct(limit)
+            ),
         ));
     }
 
@@ -283,7 +313,12 @@ pub fn evaluate_policy(
         .max_by(|a, b| a.breach_magnitude.partial_cmp(&b.breach_magnitude).unwrap())
         .cloned();
 
-    Ok(PolicyResult { checks, all_passed, breach_count, most_severe_breach })
+    Ok(PolicyResult {
+        checks,
+        all_passed,
+        breach_count,
+        most_severe_breach,
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -332,7 +367,9 @@ pub fn run_policy_check(
         .regime_state
         .as_ref()
         .map(|r| r.current_label.to_string())
-        .ok_or_else(|| ComputeError::InvalidInput("factor model has no regime_state".to_string()))?;
+        .ok_or_else(|| {
+            ComputeError::InvalidInput("factor model has no regime_state".to_string())
+        })?;
     let portfolio_vol = portfolio_vol_annualized(portfolio, model);
     let cvar_95 = portfolio_cvar_95(portfolio, data)?;
     let (_, max_factor_share) = max_factor_contribution_share(portfolio, model);
@@ -364,7 +401,13 @@ pub fn run_policy_check(
 
     let invariants = vec![InvariantCheck {
         name: "breach_count == checks.iter().filter(!passed).count()".to_string(),
-        passed: output.policy_result.breach_count == output.policy_result.checks.iter().filter(|c| !c.passed).count(),
+        passed: output.policy_result.breach_count
+            == output
+                .policy_result
+                .checks
+                .iter()
+                .filter(|c| !c.passed)
+                .count(),
         tolerance: 0.0,
         detail: format!("breach_count={}", output.policy_result.breach_count),
     }];

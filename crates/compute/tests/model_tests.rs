@@ -33,7 +33,11 @@ fn ols_recovers_known_betas() {
         "recovered intercept {} too far from expected {true_intercept}",
         fit.intercept
     );
-    assert!(fit.r_squared > 0.9, "R^2 {} unexpectedly low", fit.r_squared);
+    assert!(
+        fit.r_squared > 0.9,
+        "R^2 {} unexpectedly low",
+        fit.r_squared
+    );
 }
 
 #[test]
@@ -66,7 +70,10 @@ fn ledoit_wolf_shrinks_pure_noise_toward_identity() {
     let n = 5;
     let data = DMatrix::from_fn(t, n, |_, _| rng.next_signed() * 0.01);
     let (shrunk, intensity) = ledoit_wolf_shrink_identity(&data);
-    assert!(intensity > 0.0, "expected nonzero shrinkage on a short noisy window");
+    assert!(
+        intensity > 0.0,
+        "expected nonzero shrinkage on a short noisy window"
+    );
     assert!(is_symmetric(&shrunk, 1e-9));
 }
 
@@ -86,13 +93,15 @@ fn regime_conditional_f_is_psd_for_all_three_regimes_on_real_nsei_data() {
     let model = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily))
         .expect("regime-conditional fit failed on real data");
 
-    let regime_fs = model
-        .regime_factor_covariance_daily
-        .as_ref()
-        .expect("regime-conditioning is unconditional, regime_factor_covariance_daily must be Some");
+    let regime_fs = model.regime_factor_covariance_daily.as_ref().expect(
+        "regime-conditioning is unconditional, regime_factor_covariance_daily must be Some",
+    );
 
     for (regime_idx, f) in regime_fs.iter().enumerate() {
-        assert!(is_symmetric(f, 1e-9), "F for regime {regime_idx} is not symmetric");
+        assert!(
+            is_symmetric(f, 1e-9),
+            "F for regime {regime_idx} is not symmetric"
+        );
         let eig = f.clone().symmetric_eigenvalues();
         for lambda in eig.iter() {
             assert!(

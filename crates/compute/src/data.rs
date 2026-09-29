@@ -206,7 +206,13 @@ pub fn fetch_yahoo_chart(ticker: &str) -> Result<PriceSeries> {
     let result = resp
         .chart
         .result
-        .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+        .and_then(|mut r| {
+            if r.is_empty() {
+                None
+            } else {
+                Some(r.remove(0))
+            }
+        })
         .ok_or_else(|| ComputeError::Data(format!("no chart result for {ticker}")))?;
 
     let timestamps = result
@@ -452,9 +458,8 @@ pub fn to_returns(prices: &AlignedPrices, frequency: crate::model::Frequency) ->
         crate::model::Frequency::Weekly => {
             let idx = weekly_resample_indices(&prices.dates);
             let dates: Vec<NaiveDate> = idx.iter().map(|&i| prices.dates[i]).collect();
-            let resample = |series: &Vec<f64>| -> Vec<f64> {
-                idx.iter().map(|&i| series[i]).collect()
-            };
+            let resample =
+                |series: &Vec<f64>| -> Vec<f64> { idx.iter().map(|&i| series[i]).collect() };
             let stock_closes = prices
                 .stock_closes
                 .iter()

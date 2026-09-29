@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use compute::experiments::{Holding, Portfolio};
 use compute::model::{fit_factor_model, Frequency, ModelConfig};
-use compute::reverse_stress::{kkt_shock, mahalanobis_severity, run_reverse_stress, severity_label, ReverseStressInput};
+use compute::reverse_stress::{
+    kkt_shock, mahalanobis_severity, run_reverse_stress, severity_label, ReverseStressInput,
+};
 use compute::trace::DataWindow;
 use compute::ComputeError;
 use nalgebra::{DMatrix, DVector};
@@ -25,16 +27,27 @@ fn kkt_shock_matches_closed_form_for_a_single_active_factor() {
     let s = kkt_shock(&f, &p, loss_threshold);
 
     let expected_s_active = -loss_threshold / p[active];
-    assert!((s[active] - expected_s_active).abs() < 1e-6, "got {}", s[active]);
+    assert!(
+        (s[active] - expected_s_active).abs() < 1e-6,
+        "got {}",
+        s[active]
+    );
     for i in 0..k {
         if i != active {
-            assert!(s[i].abs() < 1e-9, "expected factor {i} to be ~0, got {}", s[i]);
+            assert!(
+                s[i].abs() < 1e-9,
+                "expected factor {i} to be ~0, got {}",
+                s[i]
+            );
         }
     }
 
     let severity = mahalanobis_severity(&s, &f).unwrap();
     let expected_severity = expected_s_active.abs() / f[(active, active)].sqrt();
-    assert!((severity - expected_severity).abs() < 1e-6, "got {severity} expected {expected_severity}");
+    assert!(
+        (severity - expected_severity).abs() < 1e-6,
+        "got {severity} expected {expected_severity}"
+    );
 }
 
 #[test]
@@ -52,8 +65,14 @@ fn severity_label_buckets_correctly() {
 fn two_stock_portfolio() -> Portfolio {
     Portfolio {
         holdings: vec![
-            Holding { ticker: "AAA".to_string(), weight: 0.6 },
-            Holding { ticker: "BBB".to_string(), weight: 0.4 },
+            Holding {
+                ticker: "AAA".to_string(),
+                weight: 0.6,
+            },
+            Holding {
+                ticker: "BBB".to_string(),
+                weight: 0.4,
+            },
         ],
         total_value_inr: 1_000_000.0,
     }
@@ -97,11 +116,23 @@ fn infeasible_threshold_returns_the_correct_max_feasible_loss() {
         frequency: None,
     };
 
-    let result = run_reverse_stress(&data.quality, data_window(&data, 252), &model, &portfolio, &input);
+    let result = run_reverse_stress(
+        &data.quality,
+        data_window(&data, 252),
+        &model,
+        &portfolio,
+        &input,
+    );
     match result {
         Err(ComputeError::ReverseStressInfeasible(msg)) => {
-            assert!(msg.contains("cannot be breached"), "unexpected message: {msg}");
-            assert!(msg.contains("Maximum feasible loss"), "unexpected message: {msg}");
+            assert!(
+                msg.contains("cannot be breached"),
+                "unexpected message: {msg}"
+            );
+            assert!(
+                msg.contains("Maximum feasible loss"),
+                "unexpected message: {msg}"
+            );
         }
         other => panic!("expected ComputeError::ReverseStressInfeasible, got {other:?}"),
     }
@@ -126,8 +157,14 @@ fn solution_respects_factor_bounds() {
         frequency: None,
     };
 
-    let (output, trace) =
-        run_reverse_stress(&data.quality, data_window(&data, 252), &model, &portfolio, &input).unwrap();
+    let (output, trace) = run_reverse_stress(
+        &data.quality,
+        data_window(&data, 252),
+        &model,
+        &portfolio,
+        &input,
+    )
+    .unwrap();
 
     for (factor, (lb, ub)) in &bounds {
         let shock = output.shock_vector[factor];
@@ -164,7 +201,13 @@ fn gradient_descent_converges_and_breaches_the_threshold_on_a_synthetic_portfoli
     let model = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily)).unwrap();
 
     let portfolio = Portfolio {
-        holdings: tickers.iter().map(|t| Holding { ticker: t.clone(), weight: 0.1 }).collect(),
+        holdings: tickers
+            .iter()
+            .map(|t| Holding {
+                ticker: t.clone(),
+                weight: 0.1,
+            })
+            .collect(),
         total_value_inr: 10_000_000.0,
     };
 
@@ -175,8 +218,14 @@ fn gradient_descent_converges_and_breaches_the_threshold_on_a_synthetic_portfoli
         frequency: None,
     };
 
-    let (output, trace) =
-        run_reverse_stress(&data.quality, data_window(&data, 252), &model, &portfolio, &input).unwrap();
+    let (output, trace) = run_reverse_stress(
+        &data.quality,
+        data_window(&data, 252),
+        &model,
+        &portfolio,
+        &input,
+    )
+    .unwrap();
 
     assert!(
         output.portfolio_pnl_inr <= -input.loss_threshold_inr * 0.999,

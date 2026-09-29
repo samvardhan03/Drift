@@ -212,12 +212,14 @@ fn build_experiment(
     baseline_override: Option<String>,
 ) -> Result<Experiment, OrchestratorError> {
     Ok(match tool {
-        RiskTool::CurrentRisk => Experiment::RiskDecomposition(serde_json::from_value::<
-            RiskDecompositionInput,
-        >(inject_portfolio(params, portfolio))?),
-        RiskTool::FactorShock => Experiment::FactorShock(serde_json::from_value::<FactorShockInput>(
-            inject_portfolio(params, portfolio),
-        )?),
+        RiskTool::CurrentRisk => {
+            Experiment::RiskDecomposition(serde_json::from_value::<RiskDecompositionInput>(
+                inject_portfolio(params, portfolio),
+            )?)
+        }
+        RiskTool::FactorShock => Experiment::FactorShock(
+            serde_json::from_value::<FactorShockInput>(inject_portfolio(params, portfolio))?,
+        ),
         RiskTool::HistoricalStress => {
             let scenario_id = params
                 .get("scenario_id")
@@ -226,35 +228,42 @@ fn build_experiment(
             let scenario = compute::scenarios::all_scenarios()
                 .iter()
                 .find(|s| s.id == scenario_id);
-            let (shocks_pct, propagate): (std::collections::BTreeMap<String, f64>, bool) = match scenario {
-                Some(s) => (
-                    s.shocks_pct.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-                    s.propagate,
-                ),
-                // Unknown/missing scenario_id: fall through to a no-op
-                // shock set rather than failing the whole plan -- the
-                // per-tool ToolResult still records this tool ran, just
-                // with an empty (zero-loss) shock, which is a visible,
-                // diagnosable signal in the trace rather than a hard error.
-                None => (Default::default(), true),
-            };
+            let (shocks_pct, propagate): (std::collections::BTreeMap<String, f64>, bool) =
+                match scenario {
+                    Some(s) => (
+                        s.shocks_pct
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), *v))
+                            .collect(),
+                        s.propagate,
+                    ),
+                    // Unknown/missing scenario_id: fall through to a no-op
+                    // shock set rather than failing the whole plan -- the
+                    // per-tool ToolResult still records this tool ran, just
+                    // with an empty (zero-loss) shock, which is a visible,
+                    // diagnosable signal in the trace rather than a hard error.
+                    None => (Default::default(), true),
+                };
             let mut map = match params {
                 Value::Object(map) => map.clone(),
                 _ => serde_json::Map::new(),
             };
             map.insert("shocks_pct".to_string(), serde_json::to_value(&shocks_pct)?);
             map.insert("propagate".to_string(), serde_json::json!(propagate));
-            Experiment::FactorShock(serde_json::from_value::<FactorShockInput>(inject_portfolio(
-                &Value::Object(map),
-                portfolio,
-            ))?)
+            Experiment::FactorShock(serde_json::from_value::<FactorShockInput>(
+                inject_portfolio(&Value::Object(map), portfolio),
+            )?)
         }
-        RiskTool::CvarRebalance => Experiment::CvarRebalance(serde_json::from_value::<
-            CvarRebalanceInput,
-        >(inject_portfolio(params, portfolio))?),
-        RiskTool::PortfolioPerformance => Experiment::PortfolioPerformance(serde_json::from_value::<
-            PortfolioPerformanceInput,
-        >(inject_portfolio(params, portfolio))?),
+        RiskTool::CvarRebalance => {
+            Experiment::CvarRebalance(serde_json::from_value::<CvarRebalanceInput>(
+                inject_portfolio(params, portfolio),
+            )?)
+        }
+        RiskTool::PortfolioPerformance => {
+            Experiment::PortfolioPerformance(serde_json::from_value::<PortfolioPerformanceInput>(
+                inject_portfolio(params, portfolio),
+            )?)
+        }
         RiskTool::RiskDrift => {
             let mut input = serde_json::from_value::<RiskDriftInput>(params.clone())?;
             if input.baseline_snapshot_id.is_none() {
@@ -262,9 +271,9 @@ fn build_experiment(
             }
             Experiment::RiskDrift(input)
         }
-        RiskTool::ReverseStress => {
-            Experiment::ReverseStress(serde_json::from_value::<ReverseStressInput>(params.clone())?)
-        }
+        RiskTool::ReverseStress => Experiment::ReverseStress(serde_json::from_value::<
+            ReverseStressInput,
+        >(params.clone())?),
         RiskTool::PolicyCheck => {
             let mut map = match params {
                 Value::Object(map) => map.clone(),
@@ -274,7 +283,9 @@ fn build_experiment(
                 let policy = ctx.policy.clone().unwrap_or_default();
                 map.insert("policy".to_string(), serde_json::to_value(policy)?);
             }
-            Experiment::PolicyCheck(serde_json::from_value::<PolicyCheckInput>(Value::Object(map))?)
+            Experiment::PolicyCheck(serde_json::from_value::<PolicyCheckInput>(Value::Object(
+                map,
+            ))?)
         }
     })
 }
@@ -296,8 +307,16 @@ fn snapshot_from_trace(
         portfolio_hash: ctx.portfolio_hash.clone(),
         experiment_type: trace.experiment.clone(),
         engine_version: trace.engine_version.clone(),
-        regime_label: trace.model_params.regime_state.as_ref().map(|r| r.current_label.to_string()),
-        smoothed_probs: trace.model_params.regime_state.as_ref().map(|r| r.smoothed_probs),
+        regime_label: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.current_label.to_string()),
+        smoothed_probs: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.smoothed_probs),
         portfolio_vol_annualized: trace
             .outputs
             .get("result")
@@ -338,8 +357,15 @@ fn execute_one(
     match compute::dispatch::run_experiment(&experiment, portfolio, ctx) {
         Ok(mut trace) => {
             if tool == RiskTool::HistoricalStress {
-                let scenario_id = plan.params.get("scenario_id").and_then(Value::as_str).unwrap_or_default();
-                if let Some(s) = compute::scenarios::all_scenarios().iter().find(|s| s.id == scenario_id) {
+                let scenario_id = plan
+                    .params
+                    .get("scenario_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Some(s) = compute::scenarios::all_scenarios()
+                    .iter()
+                    .find(|s| s.id == scenario_id)
+                {
                     trace.scenario_provenance = Some(compute::trace::ScenarioProvenance {
                         scenario_id: s.id.to_string(),
                         scenario_name: s.name.to_string(),
@@ -372,7 +398,10 @@ pub fn run_tool_plans(
     plans: &[ToolPlan],
     portfolio: &Portfolio,
     ctx: &ExperimentContext,
-) -> (Vec<compute::trace::EvidenceTrace>, Vec<crate::execution_trace::ToolResult>) {
+) -> (
+    Vec<compute::trace::EvidenceTrace>,
+    Vec<crate::execution_trace::ToolResult>,
+) {
     let mut traces = Vec::new();
     let mut results = Vec::new();
     let mut current_risk_snapshot_id: Option<String> = None;
@@ -389,8 +418,10 @@ pub fn run_tool_plans(
 
         match outcome {
             ToolOutcome::Trace(trace) => {
-                let next_is_risk_drift =
-                    plans.get(i + 1).map(|p| p.tool == "risk_drift").unwrap_or(false);
+                let next_is_risk_drift = plans
+                    .get(i + 1)
+                    .map(|p| p.tool == "risk_drift")
+                    .unwrap_or(false);
                 if plan.tool == "current_risk" && next_is_risk_drift {
                     if let Ok(snapshot) = snapshot_from_trace(&trace, ctx) {
                         if let Ok(id) = ctx.store.insert(&snapshot) {

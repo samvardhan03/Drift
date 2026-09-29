@@ -33,10 +33,7 @@ impl Portfolio {
     }
 
     pub fn weights(&self) -> DVector<f64> {
-        DVector::from_iterator(
-            self.holdings.len(),
-            self.holdings.iter().map(|h| h.weight),
-        )
+        DVector::from_iterator(self.holdings.len(), self.holdings.iter().map(|h| h.weight))
     }
 }
 
@@ -93,7 +90,8 @@ fn default_true() -> bool {
 
 impl FactorShockInput {
     pub fn resolved_window(&self) -> usize {
-        self.window.unwrap_or_else(|| self.frequency.default_window())
+        self.window
+            .unwrap_or_else(|| self.frequency.default_window())
     }
 }
 
@@ -313,7 +311,10 @@ fn propagate_and_price(
         for (ui, &unknown_factor_idx) in unknown_idx.iter().enumerate() {
             let mut row = BTreeMap::new();
             for (ki, &known_factor_idx) in known_idx.iter().enumerate() {
-                row.insert(factor_names[known_factor_idx].clone(), coefficients[(ui, ki)]);
+                row.insert(
+                    factor_names[known_factor_idx].clone(),
+                    coefficients[(ui, ki)],
+                );
             }
             conditional_coefficients_out.insert(factor_names[unknown_factor_idx].clone(), row);
         }
@@ -607,7 +608,8 @@ pub struct RiskDecompositionInput {
 
 impl RiskDecompositionInput {
     pub fn resolved_window(&self) -> usize {
-        self.window.unwrap_or_else(|| self.frequency.default_window())
+        self.window
+            .unwrap_or_else(|| self.frequency.default_window())
     }
 }
 
@@ -727,8 +729,11 @@ pub fn run_risk_decomposition(
         0.0
     };
 
-    let portfolio_betas: BTreeMap<String, f64> =
-        factor_names.iter().enumerate().map(|(k, name)| (name.clone(), x[k])).collect();
+    let portfolio_betas: BTreeMap<String, f64> = factor_names
+        .iter()
+        .enumerate()
+        .map(|(k, name)| (name.clone(), x[k]))
+        .collect();
     let corr = model.factor_correlation();
     let factor_correlation = CorrelationMatrix {
         factor_names: factor_names.clone(),
@@ -742,7 +747,12 @@ pub fn run_risk_decomposition(
         by_factor.iter().map(|f| f.contribution).sum::<f64>() + specific_risk_contribution;
 
     let invariants = vec![
-        InvariantCheck::approx_eq("sum(by_stock.contribution) == portfolio_vol", stock_sum, vol, 1e-9),
+        InvariantCheck::approx_eq(
+            "sum(by_stock.contribution) == portfolio_vol",
+            stock_sum,
+            vol,
+            1e-9,
+        ),
         InvariantCheck::approx_eq(
             "sum(by_factor.contribution) + specific_risk == portfolio_vol",
             factor_plus_specific,
@@ -751,8 +761,11 @@ pub fn run_risk_decomposition(
         ),
     ];
 
-    let specific_risk_fraction_of_vol =
-        if vol > 0.0 { specific_risk_contribution / vol } else { 0.0 };
+    let specific_risk_fraction_of_vol = if vol > 0.0 {
+        specific_risk_contribution / vol
+    } else {
+        0.0
+    };
     let output = RiskDecompositionOutput {
         portfolio_vol_annualized: vol,
         portfolio_vol_annualized_pct: crate::format::to_pct_2dp(vol),

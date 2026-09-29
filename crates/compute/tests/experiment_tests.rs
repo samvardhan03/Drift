@@ -109,7 +109,11 @@ fn euler_contributions_sum_to_portfolio_vol_stock_and_factor_views() {
         run_risk_decomposition(&data.quality, data_window(&data, 252), &model, &input).unwrap();
 
     for inv in &trace.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
 
     let stock_sum: f64 = output.by_stock.iter().map(|s| s.contribution).sum();
@@ -156,7 +160,11 @@ fn linear_approximation_pnl_is_linear_in_shock_size() {
         run_factor_shock(&data.quality, data_window(&data, 252), &model, &input2).unwrap();
 
     for inv in &trace1.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
 
     assert!(
@@ -227,7 +235,9 @@ fn log_space_holding_return_is_linear_in_log_shock() {
 
 #[test]
 fn simple_log_round_trip_matches_within_tolerance() {
-    for pct in [-50.0, -12.0, -1.0, -0.001, 0.0, 0.001, 1.0, 12.0, 20.0, 200.0] {
+    for pct in [
+        -50.0, -12.0, -1.0, -0.001, 0.0, 0.001, 1.0, 12.0, 20.0, 200.0,
+    ] {
         let simple = pct / 100.0;
         let log = simple_to_log(simple);
         let back = log_to_simple(log);
@@ -288,7 +298,10 @@ fn risk_decomposition_always_uses_regime_conditional_vol() {
     );
     let tickers = vec!["AAA".to_string(), "BBB".to_string()];
     let model = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily)).unwrap();
-    assert!(model.regime_state.is_some(), "regime_state must always be populated");
+    assert!(
+        model.regime_state.is_some(),
+        "regime_state must always be populated"
+    );
 
     // Direct signal that regime-conditioning is actually doing something on
     // this regime-structured data (not a no-op): Bull and Crisis regimes'
@@ -308,7 +321,11 @@ fn risk_decomposition_always_uses_regime_conditional_vol() {
         run_risk_decomposition(&data.quality, data_window(&data, 252), &model, &input).unwrap();
 
     for inv in &trace.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
     assert!(output.portfolio_vol_annualized > 0.0);
     assert!(trace.model_params.regime_state.is_some());
@@ -319,7 +336,10 @@ fn factor_shock_crisis_comparison_present_when_current_regime_is_not_crisis() {
     // Ends in Bull (lowest vol last) -> current regime should be Bull, not Crisis.
     let (data, model) = two_stock_model_with_regime([0.035, 0.012, 0.003], 5);
     let state = model.regime_state.as_ref().unwrap();
-    assert_ne!(state.current_label, "Crisis", "test setup: expected a non-Crisis current regime");
+    assert_ne!(
+        state.current_label, "Crisis",
+        "test setup: expected a non-Crisis current regime"
+    );
 
     let portfolio = two_holding_portfolio();
     let mut shocks = BTreeMap::new();
@@ -349,7 +369,10 @@ fn factor_shock_crisis_comparison_absent_when_current_regime_is_crisis() {
     // Ends in Crisis (highest vol last) -> current regime should be Crisis.
     let (data, model) = two_stock_model_with_regime([0.003, 0.012, 0.035], 2);
     let state = model.regime_state.as_ref().unwrap();
-    assert_eq!(state.current_label, "Crisis", "test setup: expected a Crisis current regime");
+    assert_eq!(
+        state.current_label, "Crisis",
+        "test setup: expected a Crisis current regime"
+    );
 
     let portfolio = two_holding_portfolio();
     let mut shocks = BTreeMap::new();

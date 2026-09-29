@@ -5,7 +5,10 @@
 
 use std::sync::Mutex;
 
-use agent::gemini::{Candidate, Content, FunctionCall, GeminiClient, GeminiError, GeminiRequest, GeminiResponse, Part};
+use agent::gemini::{
+    Candidate, Content, FunctionCall, GeminiClient, GeminiError, GeminiRequest, GeminiResponse,
+    Part,
+};
 
 pub struct MockGeminiClient {
     responses: Mutex<Vec<Result<GeminiResponse, String>>>,

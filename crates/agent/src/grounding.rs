@@ -111,7 +111,11 @@ fn number_regex() -> &'static Regex {
 fn parse_digits(sign: &str, digits: &str) -> Option<f64> {
     let normalized: String = digits.chars().filter(|&c| c != ',').collect();
     let value: f64 = normalized.parse().ok()?;
-    Some(if sign == "-" || sign == "\u{2212}" { -value } else { value })
+    Some(if sign == "-" || sign == "\u{2212}" {
+        -value
+    } else {
+        value
+    })
 }
 
 /// One number extracted from narration text, with its normalized value,
@@ -210,9 +214,10 @@ pub fn check_grounding(narration: &str, trace_numbers: &[f64]) -> GroundingCheck
         // magnitude a negative trace value like `total_return_pct: -17.8`
         // grounds, just without the model repeating the sign character.
         // Caught live verifying this session's narration style change.
-        let is_match = trace_numbers
-            .iter()
-            .any(|&t| approx_eq(extracted.value, t, RELATIVE_TOLERANCE) || approx_eq(-extracted.value, t, RELATIVE_TOLERANCE));
+        let is_match = trace_numbers.iter().any(|&t| {
+            approx_eq(extracted.value, t, RELATIVE_TOLERANCE)
+                || approx_eq(-extracted.value, t, RELATIVE_TOLERANCE)
+        });
         if is_match {
             check.matched.push(extracted.value);
         } else {
@@ -306,14 +311,19 @@ pub async fn grounded_narrate_many<C: GeminiClient>(
         .collect();
 
     let mut narration =
-        crate::narrate::narrate_tools_with_instructions(client, traces, None, conversation_history).await?;
+        crate::narrate::narrate_tools_with_instructions(client, traces, None, conversation_history)
+            .await?;
     let mut check = check_grounding(&narration, &trace_numbers);
     let mut retries = 0;
     while !check.passed() && retries < MAX_RETRIES {
         let extra = retry_instructions(&check.unmatched);
-        narration =
-            crate::narrate::narrate_tools_with_instructions(client, traces, Some(&extra), conversation_history)
-                .await?;
+        narration = crate::narrate::narrate_tools_with_instructions(
+            client,
+            traces,
+            Some(&extra),
+            conversation_history,
+        )
+        .await?;
         check = check_grounding(&narration, &trace_numbers);
         retries += 1;
     }

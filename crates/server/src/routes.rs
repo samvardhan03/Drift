@@ -30,9 +30,15 @@ pub struct AppState {
 /// `regime_label`/`smoothed_probs` come from `model_params.regime_state`,
 /// which every experiment type now always populates (see `compute`'s
 /// always-on regime).
-fn snapshot_from_trace(trace: &EvidenceTrace, portfolio: &Portfolio) -> Result<RiskSnapshot, ApiError> {
-    let holdings: Vec<(String, f64)> =
-        portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+fn snapshot_from_trace(
+    trace: &EvidenceTrace,
+    portfolio: &Portfolio,
+) -> Result<RiskSnapshot, ApiError> {
+    let holdings: Vec<(String, f64)> = portfolio
+        .holdings
+        .iter()
+        .map(|h| (h.ticker.clone(), h.weight))
+        .collect();
     let portfolio_hash = compute::portfolio::portfolio_hash(&holdings);
 
     let result = trace.outputs.get("result");
@@ -47,8 +53,9 @@ fn snapshot_from_trace(trace: &EvidenceTrace, portfolio: &Portfolio) -> Result<R
     let cvar_historical = number_at(&["stats_after", "historical_cvar"])
         .or_else(|| number_at(&["stats_before", "historical_cvar"]));
 
-    let trace_json = serde_json::to_string(trace)
-        .map_err(|e| ApiError::bad_request("internal_error", format!("failed to serialize trace: {e}")))?;
+    let trace_json = serde_json::to_string(trace).map_err(|e| {
+        ApiError::bad_request("internal_error", format!("failed to serialize trace: {e}"))
+    })?;
 
     Ok(RiskSnapshot {
         id: String::new(), // SnapshotStore::insert assigns the real id
@@ -56,8 +63,16 @@ fn snapshot_from_trace(trace: &EvidenceTrace, portfolio: &Portfolio) -> Result<R
         portfolio_hash,
         experiment_type: trace.experiment.clone(),
         engine_version: trace.engine_version.clone(),
-        regime_label: trace.model_params.regime_state.as_ref().map(|r| r.current_label.to_string()),
-        smoothed_probs: trace.model_params.regime_state.as_ref().map(|r| r.smoothed_probs),
+        regime_label: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.current_label.to_string()),
+        smoothed_probs: trace
+            .model_params
+            .regime_state
+            .as_ref()
+            .map(|r| r.smoothed_probs),
         portfolio_vol_annualized,
         cvar_historical,
         trace_json,
@@ -120,11 +135,17 @@ pub async fn post_experiment(
         ApiError::bad_request("invalid_experiment", format!("invalid experiment: {e}"))
     })?;
 
-    let trace = state.backend.run_experiment(experiment, req.portfolio.clone(), req.policy).await?;
+    let trace = state
+        .backend
+        .run_experiment(experiment, req.portfolio.clone(), req.policy)
+        .await?;
 
     let snapshot = snapshot_from_trace(&trace, &req.portfolio)?;
     state.store.insert(&snapshot).map_err(|e| {
-        ApiError::bad_request("internal_error", format!("failed to persist risk snapshot: {e}"))
+        ApiError::bad_request(
+            "internal_error",
+            format!("failed to persist risk snapshot: {e}"),
+        )
     })?;
 
     Ok(Json(trace))
@@ -176,7 +197,12 @@ pub async fn post_ask(
     let portfolio = req.portfolio.clone();
     let result = state
         .backend
-        .run_ask(req.portfolio, req.message, req.conversation_history, req.policy)
+        .run_ask(
+            req.portfolio,
+            req.message,
+            req.conversation_history,
+            req.policy,
+        )
         .await?;
 
     let mut snapshot = snapshot_from_trace(&result.trace, &portfolio)?;
@@ -185,22 +211,36 @@ pub async fn post_ask(
     snapshot.grounding_warnings = if result.narration.grounding_warnings.is_empty() {
         None
     } else {
-        Some(serde_json::to_string(&result.narration.grounding_warnings).map_err(|e| {
-            ApiError::bad_request("internal_error", format!("failed to serialize grounding warnings: {e}"))
-        })?)
+        Some(
+            serde_json::to_string(&result.narration.grounding_warnings).map_err(|e| {
+                ApiError::bad_request(
+                    "internal_error",
+                    format!("failed to serialize grounding warnings: {e}"),
+                )
+            })?,
+        )
     };
     let result_id = state.store.insert(&snapshot).map_err(|e| {
-        ApiError::bad_request("internal_error", format!("failed to persist risk snapshot: {e}"))
+        ApiError::bad_request(
+            "internal_error",
+            format!("failed to persist risk snapshot: {e}"),
+        )
     })?;
 
     let execution_trace_json = serde_json::to_string(&result.execution_trace).map_err(|e| {
-        ApiError::bad_request("internal_error", format!("failed to serialize execution trace: {e}"))
+        ApiError::bad_request(
+            "internal_error",
+            format!("failed to serialize execution trace: {e}"),
+        )
     })?;
     state
         .store
         .insert_execution_trace(&result.execution_trace.id, &execution_trace_json)
         .map_err(|e| {
-            ApiError::bad_request("internal_error", format!("failed to persist execution trace: {e}"))
+            ApiError::bad_request(
+                "internal_error",
+                format!("failed to persist execution trace: {e}"),
+            )
         })?;
 
     Ok(Json(AskResponse {
@@ -224,10 +264,23 @@ pub async fn get_execution_trace(
     let json = state
         .store
         .get_execution_trace(&id)
-        .map_err(|e| ApiError::bad_request("internal_error", format!("failed to read snapshot store: {e}")))?
-        .ok_or_else(|| ApiError::not_found("execution_trace_not_found", format!("no stored execution trace for id {id}")))?;
+        .map_err(|e| {
+            ApiError::bad_request(
+                "internal_error",
+                format!("failed to read snapshot store: {e}"),
+            )
+        })?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "execution_trace_not_found",
+                format!("no stored execution trace for id {id}"),
+            )
+        })?;
     let trace: agent::AgentExecutionTrace = serde_json::from_str(&json).map_err(|e| {
-        ApiError::bad_request("internal_error", format!("stored execution_trace_json is invalid: {e}"))
+        ApiError::bad_request(
+            "internal_error",
+            format!("stored execution_trace_json is invalid: {e}"),
+        )
     })?;
     Ok(Json(trace))
 }
@@ -241,7 +294,10 @@ pub async fn static_handler() -> Html<&'static str> {
 /// `GET /scenarios`: the fixed set of historical scenario presets. No
 /// authentication, no portfolio needed.
 pub async fn get_scenarios() -> Json<serde_json::Value> {
-    Json(serde_json::to_value(compute::scenarios::all_scenarios()).expect("scenarios always serialize"))
+    Json(
+        serde_json::to_value(compute::scenarios::all_scenarios())
+            .expect("scenarios always serialize"),
+    )
 }
 
 /// `GET /report/{result_id}`: a one-page PDF report for a previously
@@ -251,33 +307,51 @@ pub async fn get_report(State(state): State<AppState>, Path(result_id): Path<Str
     let snapshot = match state.store.get(&result_id) {
         Ok(Some(snapshot)) => snapshot,
         Ok(None) => {
-            return ApiError::not_found("result_not_found", format!("no stored result for id {result_id}"))
-                .into_response();
+            return ApiError::not_found(
+                "result_not_found",
+                format!("no stored result for id {result_id}"),
+            )
+            .into_response();
         }
         Err(e) => {
-            return ApiError::bad_request("internal_error", format!("failed to read snapshot store: {e}"))
-                .into_response();
+            return ApiError::bad_request(
+                "internal_error",
+                format!("failed to read snapshot store: {e}"),
+            )
+            .into_response();
         }
     };
     let trace: EvidenceTrace = match serde_json::from_str(&snapshot.trace_json) {
         Ok(trace) => trace,
         Err(e) => {
-            return ApiError::bad_request("internal_error", format!("stored trace_json is invalid: {e}"))
-                .into_response();
+            return ApiError::bad_request(
+                "internal_error",
+                format!("stored trace_json is invalid: {e}"),
+            )
+            .into_response();
         }
     };
     let grounding_warnings: Vec<String> = match &snapshot.grounding_warnings {
         Some(json) => match serde_json::from_str(json) {
             Ok(warnings) => warnings,
             Err(e) => {
-                return ApiError::bad_request("internal_error", format!("stored grounding_warnings is invalid: {e}"))
-                    .into_response();
+                return ApiError::bad_request(
+                    "internal_error",
+                    format!("stored grounding_warnings is invalid: {e}"),
+                )
+                .into_response();
             }
         },
         None => Vec::new(),
     };
-    let bytes = crate::pdf::render_report(&trace, snapshot.narration.as_deref(), &grounding_warnings);
-    (StatusCode::OK, [(header::CONTENT_TYPE, "application/pdf")], bytes).into_response()
+    let bytes =
+        crate::pdf::render_report(&trace, snapshot.narration.as_deref(), &grounding_warnings);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/pdf")],
+        bytes,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -326,9 +400,15 @@ pub async fn get_drift(
     State(state): State<AppState>,
     Query(query): Query<DriftQuery>,
 ) -> Result<Json<DriftListResponse>, ApiError> {
-    let candidates = state.store.latest_for_portfolio(&query.portfolio, DRIFT_SCAN_WINDOW).map_err(|e| {
-        ApiError::bad_request("internal_error", format!("failed to read snapshot store: {e}"))
-    })?;
+    let candidates = state
+        .store
+        .latest_for_portfolio(&query.portfolio, DRIFT_SCAN_WINDOW)
+        .map_err(|e| {
+            ApiError::bad_request(
+                "internal_error",
+                format!("failed to read snapshot store: {e}"),
+            )
+        })?;
 
     let mut snapshots = Vec::new();
     for snapshot in candidates {
@@ -336,14 +416,31 @@ pub async fn get_drift(
             continue;
         }
         let trace: EvidenceTrace = serde_json::from_str(&snapshot.trace_json).map_err(|e| {
-            ApiError::bad_request("internal_error", format!("stored trace_json is invalid: {e}"))
+            ApiError::bad_request(
+                "internal_error",
+                format!("stored trace_json is invalid: {e}"),
+            )
         })?;
         let result = trace.outputs.get("result");
-        let f = |key: &str| result.and_then(|r| r.get(key)).and_then(Value::as_f64).unwrap_or(0.0);
-        let s = |key: &str| {
-            result.and_then(|r| r.get(key)).and_then(Value::as_str).map(str::to_string).unwrap_or_default()
+        let f = |key: &str| {
+            result
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
         };
-        let i = |key: &str| result.and_then(|r| r.get(key)).and_then(Value::as_i64).unwrap_or(0);
+        let s = |key: &str| {
+            result
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default()
+        };
+        let i = |key: &str| {
+            result
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        };
         snapshots.push(DriftSummary {
             id: snapshot.id.clone(),
             created_at: snapshot.created_at.clone(),

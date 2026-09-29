@@ -125,10 +125,11 @@ pub fn kkt_shock(f: &DMatrix<f64>, p: &DVector<f64>, loss_threshold: f64) -> DVe
 /// `sqrt(s^T F^-1 s)`. `Err` only if `f` is singular (shouldn't happen for
 /// a Ledoit-Wolf-shrunk covariance, which is always PD).
 pub fn mahalanobis_severity(s: &DVector<f64>, f: &DMatrix<f64>) -> Result<f64> {
-    let f_inv = f
-        .clone()
-        .try_inverse()
-        .ok_or_else(|| ComputeError::Model("factor covariance is singular; cannot compute Mahalanobis severity".to_string()))?;
+    let f_inv = f.clone().try_inverse().ok_or_else(|| {
+        ComputeError::Model(
+            "factor covariance is singular; cannot compute Mahalanobis severity".to_string(),
+        )
+    })?;
     let quadratic = (s.transpose() * &f_inv * s)[(0, 0)];
     Ok(quadratic.max(0.0).sqrt())
 }
@@ -139,7 +140,11 @@ pub fn mahalanobis_severity(s: &DVector<f64>, f: &DMatrix<f64>) -> Result<f64> {
 /// `pnl_fn` is monotonically non-increasing in `t` along this ray (true for
 /// any "bad" direction actually produced by this module's own solver;
 /// not enforced for an arbitrary `s`).
-fn scale_to_breach(s: &DVector<f64>, loss_threshold: f64, pnl_fn: &dyn Fn(&DVector<f64>) -> f64) -> f64 {
+fn scale_to_breach(
+    s: &DVector<f64>,
+    loss_threshold: f64,
+    pnl_fn: &dyn Fn(&DVector<f64>) -> f64,
+) -> f64 {
     if s.norm() < 1e-12 {
         return 1.0;
     }
@@ -230,10 +235,18 @@ pub fn run_reverse_stress(
         }
         factor_bounds_used.insert(name.clone(), (lb, ub));
     }
-    let lb_log: DVector<f64> =
-        DVector::from_iterator(k, factor_names.iter().map(|n| simple_to_log(factor_bounds_used[n].0 / 100.0)));
-    let ub_log: DVector<f64> =
-        DVector::from_iterator(k, factor_names.iter().map(|n| simple_to_log(factor_bounds_used[n].1 / 100.0)));
+    let lb_log: DVector<f64> = DVector::from_iterator(
+        k,
+        factor_names
+            .iter()
+            .map(|n| simple_to_log(factor_bounds_used[n].0 / 100.0)),
+    );
+    let ub_log: DVector<f64> = DVector::from_iterator(
+        k,
+        factor_names
+            .iter()
+            .map(|n| simple_to_log(factor_bounds_used[n].1 / 100.0)),
+    );
 
     let w = portfolio.weights();
     let b = model.beta_matrix();
@@ -244,7 +257,8 @@ pub fn run_reverse_stress(
     let f_annual = model.factor_covariance();
 
     // --- Feasibility: worst-case (max-loss) corner of the box, linearised ---
-    let s_worst: DVector<f64> = DVector::from_fn(k, |i, _| if p[i] >= 0.0 { lb_log[i] } else { ub_log[i] });
+    let s_worst: DVector<f64> =
+        DVector::from_fn(k, |i, _| if p[i] >= 0.0 { lb_log[i] } else { ub_log[i] });
     let max_loss_linear_pnl = p.dot(&s_worst);
     if max_loss_linear_pnl > -loss_threshold {
         let max_feasible_loss = -max_loss_linear_pnl;
@@ -263,16 +277,22 @@ pub fn run_reverse_stress(
             .zip(model.fits.iter())
             .map(|(holding, fit)| {
                 let value_i = holding.weight * total_value;
-                let log_return: f64 = fit.betas.iter().zip(s.iter()).map(|(beta, sk)| beta * sk).sum();
+                let log_return: f64 = fit
+                    .betas
+                    .iter()
+                    .zip(s.iter())
+                    .map(|(beta, sk)| beta * sk)
+                    .sum();
                 value_i * (log_return.exp() - 1.0)
             })
             .sum()
     };
 
-    let f_inv = f_annual
-        .clone()
-        .try_inverse()
-        .ok_or_else(|| ComputeError::Model("factor covariance is singular; cannot compute Mahalanobis severity".to_string()))?;
+    let f_inv = f_annual.clone().try_inverse().ok_or_else(|| {
+        ComputeError::Model(
+            "factor covariance is singular; cannot compute Mahalanobis severity".to_string(),
+        )
+    })?;
     let objective = |s: &DVector<f64>| -> f64 { (s.transpose() * &f_inv * s)[(0, 0)] };
 
     // --- Step 1: KKT closed form, then project onto the true feasible set ---
@@ -300,7 +320,14 @@ pub fn run_reverse_stress(
             let mut accepted = None;
             for _ in 0..30 {
                 let candidate = &s - &grad * step;
-                let candidate = project_to_feasible(&candidate, &lb_log, &ub_log, loss_threshold, &nonlinear_pnl, 20);
+                let candidate = project_to_feasible(
+                    &candidate,
+                    &lb_log,
+                    &ub_log,
+                    loss_threshold,
+                    &nonlinear_pnl,
+                    20,
+                );
                 let candidate_obj = objective(&candidate);
                 // Armijo sufficient-decrease condition (beta=0.5, c=1e-4).
                 if candidate_obj <= current_obj - 1e-4 * step * grad_norm_sq {
@@ -324,7 +351,11 @@ pub fn run_reverse_stress(
                 break;
             }
         }
-        solver_status = if converged { "converged".to_string() } else { "max_iter".to_string() };
+        solver_status = if converged {
+            "converged".to_string()
+        } else {
+            "max_iter".to_string()
+        };
     }
 
     // Final defensive snap: guarantees the hard breach invariant holds even
@@ -340,10 +371,16 @@ pub fn run_reverse_stress(
     let linearisation_error_inr = (portfolio_pnl_inr - linear_pnl).abs();
 
     let mut holding_pnl: BTreeMap<String, f64> = BTreeMap::new();
-    let mut factor_attribution: BTreeMap<String, f64> = factor_names.iter().map(|n| (n.clone(), 0.0)).collect();
+    let mut factor_attribution: BTreeMap<String, f64> =
+        factor_names.iter().map(|n| (n.clone(), 0.0)).collect();
     for (holding, fit) in portfolio.holdings.iter().zip(model.fits.iter()) {
         let value_i = holding.weight * total_value;
-        let log_return: f64 = fit.betas.iter().zip(s.iter()).map(|(beta, sk)| beta * sk).sum();
+        let log_return: f64 = fit
+            .betas
+            .iter()
+            .zip(s.iter())
+            .map(|(beta, sk)| beta * sk)
+            .sum();
         let pnl_i = value_i * (log_return.exp() - 1.0);
         holding_pnl.insert(holding.ticker.clone(), pnl_i);
         for (kk, name) in factor_names.iter().enumerate() {
@@ -353,12 +390,19 @@ pub fn run_reverse_stress(
 
     let mut by_loss: Vec<(&String, &f64)> = holding_pnl.iter().collect();
     by_loss.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap());
-    let most_vulnerable_holdings: Vec<String> = by_loss.iter().take(3).map(|(t, _)| (*t).clone()).collect();
+    let most_vulnerable_holdings: Vec<String> =
+        by_loss.iter().take(3).map(|(t, _)| (*t).clone()).collect();
 
-    let shock_vector: BTreeMap<String, f64> =
-        factor_names.iter().enumerate().map(|(i, n)| (n.clone(), log_to_simple(s[i]) * 100.0)).collect();
-    let shock_vector_log: BTreeMap<String, f64> =
-        factor_names.iter().enumerate().map(|(i, n)| (n.clone(), s[i])).collect();
+    let shock_vector: BTreeMap<String, f64> = factor_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), log_to_simple(s[i]) * 100.0))
+        .collect();
+    let shock_vector_log: BTreeMap<String, f64> = factor_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), s[i]))
+        .collect();
 
     let breach_ok = portfolio_pnl_inr <= -loss_threshold * 0.999;
     let attribution_sum: f64 = factor_attribution.values().sum();
@@ -374,7 +418,9 @@ pub fn run_reverse_stress(
             name: "portfolio_pnl_inr <= -loss_threshold_inr * 0.999".to_string(),
             passed: breach_ok,
             tolerance: loss_threshold * 0.001,
-            detail: format!("portfolio_pnl_inr={portfolio_pnl_inr:.4} loss_threshold_inr={loss_threshold:.4}"),
+            detail: format!(
+                "portfolio_pnl_inr={portfolio_pnl_inr:.4} loss_threshold_inr={loss_threshold:.4}"
+            ),
         },
         InvariantCheck::approx_eq(
             "sum(factor_attribution) ~= portfolio_pnl_inr (approximate: log-space attribution vs. \

@@ -43,7 +43,9 @@ async fn main() {
                  /experiment returns EvidenceTrace without AI narration; \
                  /ask returns 503. Set GEMINI_API_KEY and restart to enable AI features."
             );
-            Arc::new(NoAiBackend { store: store.clone() })
+            Arc::new(NoAiBackend {
+                store: store.clone(),
+            })
         }
         Err(err) => {
             tracing::error!(error = %err, "failed to initialise Gemini client: {err}");
@@ -66,9 +68,7 @@ async fn main() {
         .unwrap_or_else(|err| panic!("failed to bind {addr}: {err}"));
     tracing::info!(%addr, "listening");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }
 
 fn build_router(state: AppState) -> Router {
@@ -102,7 +102,9 @@ fn init_tracing() {
 
     tracing_subscriber::fmt()
         .json()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 }
 

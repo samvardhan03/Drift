@@ -32,17 +32,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let experiment: Experiment = serde_json::from_str(&raw)?;
 
     if matches!(experiment, Experiment::RiskDrift(_)) {
-        return Err("RiskDrift needs a running SnapshotStore with prior experiment history to \
+        return Err(
+            "RiskDrift needs a running SnapshotStore with prior experiment history to \
                      diff against, which this one-shot CLI doesn't provide -- run it via the \
                      server's POST /experiment instead."
-            .into());
+                .into(),
+        );
     }
-    if matches!(experiment, Experiment::ReverseStress(_) | Experiment::PolicyCheck(_)) {
-        return Err("ReverseStress/PolicyCheck have no \"portfolio\" field of their own (the \
+    if matches!(
+        experiment,
+        Experiment::ReverseStress(_) | Experiment::PolicyCheck(_)
+    ) {
+        return Err(
+            "ReverseStress/PolicyCheck have no \"portfolio\" field of their own (the \
                      portfolio is a separate parameter at the server/dispatch layer, not part \
                      of the JSON tagged-union input this CLI deserializes) -- run them via the \
                      server's POST /experiment instead."
-            .into());
+                .into(),
+        );
     }
 
     if let Experiment::CvarRebalance(input) = &experiment {
@@ -71,7 +78,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (portfolio, window, frequency) = match &experiment {
         Experiment::FactorShock(i) => (&i.portfolio, i.resolved_window(), i.frequency),
         Experiment::RiskDecomposition(i) => (&i.portfolio, i.resolved_window(), i.frequency),
-        Experiment::CvarRebalance(_) | Experiment::PortfolioPerformance(_) | Experiment::RiskDrift(_) | Experiment::ReverseStress(_) | Experiment::PolicyCheck(_) => {
+        Experiment::CvarRebalance(_)
+        | Experiment::PortfolioPerformance(_)
+        | Experiment::RiskDrift(_)
+        | Experiment::ReverseStress(_)
+        | Experiment::PolicyCheck(_) => {
             unreachable!("handled above")
         }
     };
@@ -96,7 +107,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (_, trace) = run_risk_decomposition(&data.quality, data_window, &model, input)?;
             trace
         }
-        Experiment::CvarRebalance(_) | Experiment::PortfolioPerformance(_) | Experiment::RiskDrift(_) | Experiment::ReverseStress(_) | Experiment::PolicyCheck(_) => {
+        Experiment::CvarRebalance(_)
+        | Experiment::PortfolioPerformance(_)
+        | Experiment::RiskDrift(_)
+        | Experiment::ReverseStress(_)
+        | Experiment::PolicyCheck(_) => {
             unreachable!("handled above")
         }
     };

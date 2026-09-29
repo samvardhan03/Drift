@@ -39,7 +39,9 @@ fn maybe_attach_policy(
     model: &crate::model::FactorModel,
 ) -> Result<EvidenceTrace> {
     if let Some(policy) = &ctx.policy {
-        trace.policy_result = Some(crate::policy::evaluate_policy(policy, portfolio, model, data)?);
+        trace.policy_result = Some(crate::policy::evaluate_policy(
+            policy, portfolio, model, data,
+        )?);
     }
     Ok(trace)
 }
@@ -82,7 +84,8 @@ pub fn run_experiment(
                 crate::model::ModelConfig::new(window, input.frequency),
             )?;
             let data_window = build_data_window(&data, window, input.frequency);
-            let (_, trace) = crate::experiments::run_factor_shock(&data.quality, data_window, &model, input)?;
+            let (_, trace) =
+                crate::experiments::run_factor_shock(&data.quality, data_window, &model, input)?;
             maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)
         }
         Experiment::RiskDecomposition(input) => {
@@ -95,8 +98,12 @@ pub fn run_experiment(
                 crate::model::ModelConfig::new(window, input.frequency),
             )?;
             let data_window = build_data_window(&data, window, input.frequency);
-            let (_, trace) =
-                crate::experiments::run_risk_decomposition(&data.quality, data_window, &model, input)?;
+            let (_, trace) = crate::experiments::run_risk_decomposition(
+                &data.quality,
+                data_window,
+                &model,
+                input,
+            )?;
             maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)
         }
         Experiment::CvarRebalance(input) => {
@@ -110,8 +117,12 @@ pub fn run_experiment(
             let window = input.resolved_window();
             let data = crate::data::load_market_data(cache_dir, &tickers, false, input.frequency)?;
             let data_window = build_data_window(&data, window, input.frequency);
-            let (_, trace) =
-                crate::performance::run_portfolio_performance(&data.quality, data_window, &data, input)?;
+            let (_, trace) = crate::performance::run_portfolio_performance(
+                &data.quality,
+                data_window,
+                &data,
+                input,
+            )?;
             if ctx.policy.is_some() {
                 // PortfolioPerformance never otherwise fits a factor model;
                 // one is fit here purely for the passive policy check, so
@@ -136,10 +147,19 @@ pub fn run_experiment(
             let frequency = crate::reverse_stress::resolved_frequency(input)?;
             let window = input.window.unwrap_or_else(|| frequency.default_window());
             let data = crate::data::load_market_data(cache_dir, &tickers, false, frequency)?;
-            let model = crate::model::fit_factor_model(&data, &tickers, crate::model::ModelConfig::new(window, frequency))?;
+            let model = crate::model::fit_factor_model(
+                &data,
+                &tickers,
+                crate::model::ModelConfig::new(window, frequency),
+            )?;
             let data_window = build_data_window(&data, window, frequency);
-            let (_, trace) =
-                crate::reverse_stress::run_reverse_stress(&data.quality, data_window, &model, portfolio, input)?;
+            let (_, trace) = crate::reverse_stress::run_reverse_stress(
+                &data.quality,
+                data_window,
+                &model,
+                portfolio,
+                input,
+            )?;
             maybe_attach_policy(trace, ctx, portfolio, &data, &model)
         }
         Experiment::PolicyCheck(input) => {
@@ -147,10 +167,20 @@ pub fn run_experiment(
             let frequency = crate::model::Frequency::from_optional_str(input.frequency.as_deref())?;
             let window = input.window.unwrap_or_else(|| frequency.default_window());
             let data = crate::data::load_market_data(cache_dir, &tickers, false, frequency)?;
-            let model = crate::model::fit_factor_model(&data, &tickers, crate::model::ModelConfig::new(window, frequency))?;
+            let model = crate::model::fit_factor_model(
+                &data,
+                &tickers,
+                crate::model::ModelConfig::new(window, frequency),
+            )?;
             let data_window = build_data_window(&data, window, frequency);
-            let (_, trace) =
-                crate::policy::run_policy_check(&data.quality, data_window, &data, &model, portfolio, input)?;
+            let (_, trace) = crate::policy::run_policy_check(
+                &data.quality,
+                data_window,
+                &data,
+                &model,
+                portfolio,
+                input,
+            )?;
             Ok(trace)
         }
     }

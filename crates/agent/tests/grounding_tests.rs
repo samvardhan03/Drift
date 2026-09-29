@@ -26,10 +26,20 @@ fn percent_and_negative_sign_are_normalised_to_a_decimal_fraction() {
 /// every compliant narration was spuriously flagged as ungrounded.
 #[test]
 fn abbreviated_l_and_cr_suffixes_are_recognised() {
-    let numbers = extract_numbers("Your portfolio would lose approximately \u{20b9}12.0L, or \u{20b9}1.2Cr in a worse case.");
+    let numbers = extract_numbers(
+        "Your portfolio would lose approximately \u{20b9}12.0L, or \u{20b9}1.2Cr in a worse case.",
+    );
     assert_eq!(numbers.len(), 2);
-    assert!((numbers[0].value - 1_200_000.0).abs() < 1e-6, "got {}", numbers[0].value);
-    assert!((numbers[1].value - 12_000_000.0).abs() < 1e-6, "got {}", numbers[1].value);
+    assert!(
+        (numbers[0].value - 1_200_000.0).abs() < 1e-6,
+        "got {}",
+        numbers[0].value
+    );
+    assert!(
+        (numbers[1].value - 12_000_000.0).abs() < 1e-6,
+        "got {}",
+        numbers[1].value
+    );
 }
 
 #[test]
@@ -47,9 +57,14 @@ fn plain_number_with_thousands_separators_is_normalised() {
 /// as ungrounded.
 #[test]
 fn a_minus_sign_before_the_rupee_symbol_is_still_applied() {
-    let numbers = extract_numbers("Your portfolio would lose approximately \u{2212}\u{20b9}11,95,069.");
+    let numbers =
+        extract_numbers("Your portfolio would lose approximately \u{2212}\u{20b9}11,95,069.");
     assert_eq!(numbers.len(), 1);
-    assert!((numbers[0].value - (-1_195_069.0)).abs() < 1e-6, "got {}", numbers[0].value);
+    assert!(
+        (numbers[0].value - (-1_195_069.0)).abs() < 1e-6,
+        "got {}",
+        numbers[0].value
+    );
 }
 
 #[test]
@@ -115,7 +130,11 @@ async fn retry_path_is_invoked_exactly_once_on_a_single_failure() {
     ]);
 
     let result = grounded_narrate(&client, &trace, &[]).await.unwrap();
-    assert_eq!(client.call_count(), 2, "expected exactly one retry (2 calls total)");
+    assert_eq!(
+        client.call_count(),
+        2,
+        "expected exactly one retry (2 calls total)"
+    );
     assert!(result.grounding_warnings.is_empty());
     assert_eq!(result.narration, "Vol is 0.1552 annualised.");
 }

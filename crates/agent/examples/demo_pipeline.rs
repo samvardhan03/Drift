@@ -7,7 +7,9 @@
 
 use std::sync::Mutex;
 
-use agent::gemini::{Candidate, Content, GeminiClient, GeminiError, GeminiRequest, GeminiResponse, Part};
+use agent::gemini::{
+    Candidate, Content, GeminiClient, GeminiError, GeminiRequest, GeminiResponse, Part,
+};
 use compute::experiments::{Holding, Portfolio};
 
 struct ScriptedClient {
@@ -46,16 +48,46 @@ fn text(t: &str) -> GeminiResponse {
 async fn main() {
     let portfolio = Portfolio {
         holdings: vec![
-            Holding { ticker: "RELIANCE.NS".to_string(), weight: 0.15 },
-            Holding { ticker: "HDFCBANK.NS".to_string(), weight: 0.13 },
-            Holding { ticker: "ICICIBANK.NS".to_string(), weight: 0.12 },
-            Holding { ticker: "INFY.NS".to_string(), weight: 0.10 },
-            Holding { ticker: "TCS.NS".to_string(), weight: 0.10 },
-            Holding { ticker: "LT.NS".to_string(), weight: 0.09 },
-            Holding { ticker: "ITC.NS".to_string(), weight: 0.09 },
-            Holding { ticker: "KOTAKBANK.NS".to_string(), weight: 0.08 },
-            Holding { ticker: "BHARTIARTL.NS".to_string(), weight: 0.08 },
-            Holding { ticker: "TMPV.NS".to_string(), weight: 0.06 },
+            Holding {
+                ticker: "RELIANCE.NS".to_string(),
+                weight: 0.15,
+            },
+            Holding {
+                ticker: "HDFCBANK.NS".to_string(),
+                weight: 0.13,
+            },
+            Holding {
+                ticker: "ICICIBANK.NS".to_string(),
+                weight: 0.12,
+            },
+            Holding {
+                ticker: "INFY.NS".to_string(),
+                weight: 0.10,
+            },
+            Holding {
+                ticker: "TCS.NS".to_string(),
+                weight: 0.10,
+            },
+            Holding {
+                ticker: "LT.NS".to_string(),
+                weight: 0.09,
+            },
+            Holding {
+                ticker: "ITC.NS".to_string(),
+                weight: 0.09,
+            },
+            Holding {
+                ticker: "KOTAKBANK.NS".to_string(),
+                weight: 0.08,
+            },
+            Holding {
+                ticker: "BHARTIARTL.NS".to_string(),
+                weight: 0.08,
+            },
+            Holding {
+                ticker: "TMPV.NS".to_string(),
+                weight: 0.06,
+            },
         ],
         total_value_inr: 10_000_000.0,
     };
@@ -87,9 +119,14 @@ portfolio's substantial equity beta exposure.";
         ]),
     };
 
-    let store = std::sync::Arc::new(store::SnapshotStore::open(":memory:").expect("in-memory store always opens"));
-    let holdings: Vec<(String, f64)> =
-        portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+    let store = std::sync::Arc::new(
+        store::SnapshotStore::open(":memory:").expect("in-memory store always opens"),
+    );
+    let holdings: Vec<(String, f64)> = portfolio
+        .holdings
+        .iter()
+        .map(|h| (h.ticker.clone(), h.weight))
+        .collect();
     let ctx = compute::context::ExperimentContext {
         store,
         portfolio_hash: compute::portfolio::portfolio_hash(&holdings),
@@ -106,11 +143,20 @@ portfolio's substantial equity beta exposure.";
     .expect("pipeline run failed");
 
     println!("=== experiment (parsed) ===");
-    println!("{}", serde_json::to_string_pretty(&result.experiment).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result.experiment).unwrap()
+    );
     println!("\n=== trace.outputs ===");
-    println!("{}", serde_json::to_string_pretty(&result.trace.outputs).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result.trace.outputs).unwrap()
+    );
     println!("\n=== trace.invariants ===");
-    println!("{}", serde_json::to_string_pretty(&result.trace.invariants).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result.trace.invariants).unwrap()
+    );
     println!("\n=== narration ===");
     println!("{}", result.narration.narration);
     println!("\n=== grounding_warnings ===");

@@ -33,7 +33,10 @@ fn constant_positive_return_compounds_correctly_with_zero_vol_and_drawdown() {
 
     let input = PortfolioPerformanceInput {
         portfolio: Portfolio {
-            holdings: vec![Holding { ticker: "STEADY".to_string(), weight: 1.0 }],
+            holdings: vec![Holding {
+                ticker: "STEADY".to_string(),
+                weight: 1.0,
+            }],
             total_value_inr: 1_000_000.0,
         },
         frequency: Frequency::Daily,
@@ -50,12 +53,23 @@ fn constant_positive_return_compounds_correctly_with_zero_vol_and_drawdown() {
         output.total_return,
         expected_total_return
     );
-    assert!(output.annualized_vol_realized.abs() < 1e-9, "expected ~zero vol, got {}", output.annualized_vol_realized);
-    assert!(output.max_drawdown.abs() < 1e-9, "expected zero drawdown for a monotonically rising series");
+    assert!(
+        output.annualized_vol_realized.abs() < 1e-9,
+        "expected ~zero vol, got {}",
+        output.annualized_vol_realized
+    );
+    assert!(
+        output.max_drawdown.abs() < 1e-9,
+        "expected zero drawdown for a monotonically rising series"
+    );
     assert!(output.end_value_inr > output.start_value_inr);
 
     for inv in &trace.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
 }
 
@@ -71,7 +85,10 @@ fn drawdown_is_captured_even_when_total_return_recovers_to_near_zero() {
 
     let input = PortfolioPerformanceInput {
         portfolio: Portfolio {
-            holdings: vec![Holding { ticker: "VSHAPE".to_string(), weight: 1.0 }],
+            holdings: vec![Holding {
+                ticker: "VSHAPE".to_string(),
+                weight: 1.0,
+            }],
             total_value_inr: 1_000_000.0,
         },
         frequency: Frequency::Daily,
@@ -105,8 +122,14 @@ fn two_holding_portfolio_satisfies_its_own_value_invariant() {
     let input = PortfolioPerformanceInput {
         portfolio: Portfolio {
             holdings: vec![
-                Holding { ticker: "A".to_string(), weight: 0.3 },
-                Holding { ticker: "B".to_string(), weight: 0.7 },
+                Holding {
+                    ticker: "A".to_string(),
+                    weight: 0.3,
+                },
+                Holding {
+                    ticker: "B".to_string(),
+                    weight: 0.7,
+                },
             ],
             total_value_inr: 2_500_000.0,
         },
@@ -121,10 +144,17 @@ fn two_holding_portfolio_satisfies_its_own_value_invariant() {
         "end_value_inr should match start_value_inr * (1 + total_return)"
     );
     for inv in &trace.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
     assert_eq!(trace.experiment, "PortfolioPerformance");
-    assert!(trace.model_params.regime_state.is_none(), "this experiment never fits a factor model");
+    assert!(
+        trace.model_params.regime_state.is_none(),
+        "this experiment never fits a factor model"
+    );
 }
 
 /// One holding steadily up, one steadily down: `holding_returns` should
@@ -141,8 +171,14 @@ fn best_and_worst_performer_are_identified_from_per_holding_returns() {
     let input = PortfolioPerformanceInput {
         portfolio: Portfolio {
             holdings: vec![
-                Holding { ticker: "WINNER".to_string(), weight: 0.4 },
-                Holding { ticker: "LOSER".to_string(), weight: 0.6 },
+                Holding {
+                    ticker: "WINNER".to_string(),
+                    weight: 0.4,
+                },
+                Holding {
+                    ticker: "LOSER".to_string(),
+                    weight: 0.6,
+                },
             ],
             total_value_inr: 1_000_000.0,
         },
@@ -158,9 +194,20 @@ fn best_and_worst_performer_are_identified_from_per_holding_returns() {
 
     let winner = &output.holding_returns["WINNER"];
     let loser = &output.holding_returns["LOSER"];
-    assert!(winner.total_return_pct > 0.0, "WINNER should have a positive return, got {}", winner.total_return_pct);
-    assert!(loser.total_return_pct < 0.0, "LOSER should have a negative return, got {}", loser.total_return_pct);
-    assert!(winner.annualized_vol_pct.abs() < 1e-6, "constant daily return implies zero realized vol");
+    assert!(
+        winner.total_return_pct > 0.0,
+        "WINNER should have a positive return, got {}",
+        winner.total_return_pct
+    );
+    assert!(
+        loser.total_return_pct < 0.0,
+        "LOSER should have a negative return, got {}",
+        loser.total_return_pct
+    );
+    assert!(
+        winner.annualized_vol_pct.abs() < 1e-6,
+        "constant daily return implies zero realized vol"
+    );
 
     let expected_winner_contribution = (0.4 * winner.total_return_pct * 100.0).round() / 100.0;
     assert!(

@@ -33,7 +33,11 @@ impl ConversationTurn {
 /// Maps our `"user"`/`"assistant"` roles onto Gemini's own `"user"`/`"model"`
 /// role vocabulary.
 pub fn turn_to_content(turn: &ConversationTurn) -> Content {
-    let role = if turn.role == "assistant" { "model" } else { "user" };
+    let role = if turn.role == "assistant" {
+        "model"
+    } else {
+        "user"
+    };
     Content {
         role: Some(role.to_string()),
         parts: vec![Part::text(turn.content.clone())],

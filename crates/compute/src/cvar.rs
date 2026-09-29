@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use good_lp::{clarabel, variable, Expression, ProblemVariables, ResolutionError, Solution, SolverModel};
+use good_lp::{
+    clarabel, variable, Expression, ProblemVariables, ResolutionError, Solution, SolverModel,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -183,7 +185,11 @@ pub fn run_cvar_rebalance(
 
     // scenarios[s][i] = simple return of stock i in scenario s.
     let scenarios: Vec<Vec<f64>> = (0..window)
-        .map(|s| (0..n).map(|i| log_to_simple(series[i][start + s])).collect())
+        .map(|s| {
+            (0..n)
+                .map(|i| log_to_simple(series[i][start + s]))
+                .collect()
+        })
         .collect();
     let scenario_count = window;
 
@@ -211,10 +217,14 @@ pub fn run_cvar_rebalance(
     // rather than failing the whole experiment, since it's informational
     // only, not load-bearing for the LP/feasibility above.
     let regime_model =
-        crate::model::fit_factor_model(data, &tickers, ModelConfig::new(window, input.frequency)).ok();
-    let regime_state: Option<RegimeState> = regime_model.as_ref().and_then(|m| m.regime_state.clone());
-    let regime_fallback_warnings: Vec<String> =
-        regime_model.as_ref().map(|m| m.regime_fallback_warnings.clone()).unwrap_or_default();
+        crate::model::fit_factor_model(data, &tickers, ModelConfig::new(window, input.frequency))
+            .ok();
+    let regime_state: Option<RegimeState> =
+        regime_model.as_ref().and_then(|m| m.regime_state.clone());
+    let regime_fallback_warnings: Vec<String> = regime_model
+        .as_ref()
+        .map(|m| m.regime_fallback_warnings.clone())
+        .unwrap_or_default();
     let regime_vol = |weights: &BTreeMap<String, f64>| -> Option<f64> {
         let m = regime_model.as_ref()?;
         // m.factor_covariance_daily (and hence stock_covariance()) is
@@ -236,7 +246,13 @@ pub fn run_cvar_rebalance(
     // set.
     let build_portfolio = |weights: &BTreeMap<String, f64>| -> Portfolio {
         Portfolio {
-            holdings: tickers.iter().map(|t| Holding { ticker: t.clone(), weight: weights[t] }).collect(),
+            holdings: tickers
+                .iter()
+                .map(|t| Holding {
+                    ticker: t.clone(),
+                    weight: weights[t],
+                })
+                .collect(),
             total_value_inr: input.portfolio.total_value_inr,
         }
     };
@@ -245,7 +261,12 @@ pub fn run_cvar_rebalance(
     // to `None` only if `regime_model` itself failed to fit (see its own
     // doc above), same as the informational vol check just above.
     let policy_result_before: Option<PolicyResult> = match (&input.policy, &regime_model) {
-        (Some(policy), Some(model)) => Some(evaluate_policy(policy, &build_portfolio(&weights_before), model, data)?),
+        (Some(policy), Some(model)) => Some(evaluate_policy(
+            policy,
+            &build_portfolio(&weights_before),
+            model,
+            data,
+        )?),
         _ => None,
     };
 
@@ -273,30 +294,31 @@ pub fn run_cvar_rebalance(
         cap_source: Some(cap_source.to_string()),
     };
 
-    let make_trace = |output: &CvarRebalanceOutput, invariants: Vec<InvariantCheck>| -> Result<EvidenceTrace> {
-        Ok(EvidenceTrace {
-            id: crate::trace::new_trace_id(),
-            experiment: "CvarRebalance".to_string(),
-            inputs: serde_json::to_value(input)?,
-            data_as_of: crate::trace::data_as_of(&data_window),
-            data_window: data_window.clone(),
-            data_quality: data_quality.clone(),
-            model_params: model_params.clone(),
-            outputs: serde_json::json!({
-                "result": output,
-                "note": "Scenarios are simple returns (exp(log) - 1) of the holdings' own \
-                         historical log returns, not factor-model-simulated. model_params' \
-                         factor_names/shrinkage_intensity do not apply to this experiment.",
-            }),
-            invariants,
-            engine_version: crate::trace::engine_version(),
-            engine_commit: crate::trace::engine_commit(),
-            scenario_provenance: None,
-            parent_trace_ids: Vec::new(),
-            baseline_model_params: None,
-            policy_result: None,
-        })
-    };
+    let make_trace =
+        |output: &CvarRebalanceOutput, invariants: Vec<InvariantCheck>| -> Result<EvidenceTrace> {
+            Ok(EvidenceTrace {
+                id: crate::trace::new_trace_id(),
+                experiment: "CvarRebalance".to_string(),
+                inputs: serde_json::to_value(input)?,
+                data_as_of: crate::trace::data_as_of(&data_window),
+                data_window: data_window.clone(),
+                data_quality: data_quality.clone(),
+                model_params: model_params.clone(),
+                outputs: serde_json::json!({
+                    "result": output,
+                    "note": "Scenarios are simple returns (exp(log) - 1) of the holdings' own \
+                             historical log returns, not factor-model-simulated. model_params' \
+                             factor_names/shrinkage_intensity do not apply to this experiment.",
+                }),
+                invariants,
+                engine_version: crate::trace::engine_version(),
+                engine_commit: crate::trace::engine_commit(),
+                scenario_provenance: None,
+                parent_trace_ids: Vec::new(),
+                baseline_model_params: None,
+                policy_result: None,
+            })
+        };
 
     // --- Pre-solve feasibility check (necessary conditions; the LP solve
     // itself remains the authoritative feasibility check) ---
@@ -311,7 +333,16 @@ pub fn run_cvar_rebalance(
              weights cannot sum to 1 under a long-only portfolio.",
             cap * (n as f64)
         );
-        let output = infeasible_output(input, scenario_count, k, weights_before.clone(), stats_before.clone(), regime_portfolio_vol_annualized_before, policy_result_before.clone(), diagnostics.clone());
+        let output = infeasible_output(
+            input,
+            scenario_count,
+            k,
+            weights_before.clone(),
+            stats_before.clone(),
+            regime_portfolio_vol_annualized_before,
+            policy_result_before.clone(),
+            diagnostics.clone(),
+        );
         let trace = make_trace(
             &output,
             vec![InvariantCheck {
@@ -336,7 +367,16 @@ pub fn run_cvar_rebalance(
             2.0 * min_required_sells,
             input.turnover_limit
         );
-        let output = infeasible_output(input, scenario_count, k, weights_before.clone(), stats_before.clone(), regime_portfolio_vol_annualized_before, policy_result_before.clone(), diagnostics.clone());
+        let output = infeasible_output(
+            input,
+            scenario_count,
+            k,
+            weights_before.clone(),
+            stats_before.clone(),
+            regime_portfolio_vol_annualized_before,
+            policy_result_before.clone(),
+            diagnostics.clone(),
+        );
         let trace = make_trace(
             &output,
             vec![InvariantCheck {
@@ -351,11 +391,15 @@ pub fn run_cvar_rebalance(
 
     // --- Build and solve the LP ---
     let mut vars = ProblemVariables::new();
-    let w: Vec<_> = (0..n).map(|_| vars.add(variable().min(0.0).max(cap))).collect();
+    let w: Vec<_> = (0..n)
+        .map(|_| vars.add(variable().min(0.0).max(cap)))
+        .collect();
     let buy: Vec<_> = (0..n).map(|_| vars.add(variable().min(0.0))).collect();
     let sell: Vec<_> = (0..n).map(|_| vars.add(variable().min(0.0))).collect();
     let zeta = vars.add_variable();
-    let u: Vec<_> = (0..scenario_count).map(|_| vars.add(variable().min(0.0))).collect();
+    let u: Vec<_> = (0..scenario_count)
+        .map(|_| vars.add(variable().min(0.0)))
+        .collect();
 
     let mut objective = Expression::from(zeta);
     for &uv in &u {
@@ -367,7 +411,11 @@ pub fn run_cvar_rebalance(
     let sum_w: Expression = w.iter().map(|&v| Expression::from(v)).sum();
     model = model.with(sum_w.eq(1.0));
 
-    let turnover_expr: Expression = buy.iter().chain(sell.iter()).map(|&v| Expression::from(v)).sum();
+    let turnover_expr: Expression = buy
+        .iter()
+        .chain(sell.iter())
+        .map(|&v| Expression::from(v))
+        .sum();
     model = model.with(turnover_expr.leq(input.turnover_limit));
 
     for i in 0..n {
@@ -390,7 +438,15 @@ pub fn run_cvar_rebalance(
         Err(e) => {
             let (status, diagnostics) = classify_resolution_error(&e);
             let output = infeasible_output_with_status(
-                input, scenario_count, k, weights_before.clone(), stats_before.clone(), regime_portfolio_vol_annualized_before, policy_result_before.clone(), status, diagnostics.clone(),
+                input,
+                scenario_count,
+                k,
+                weights_before.clone(),
+                stats_before.clone(),
+                regime_portfolio_vol_annualized_before,
+                policy_result_before.clone(),
+                status,
+                diagnostics.clone(),
             );
             let trace = make_trace(
                 &output,
@@ -410,8 +466,11 @@ pub fn run_cvar_rebalance(
     let u_star: Vec<f64> = u.iter().map(|&v| solution.value(v)).collect();
     let lp_objective_cvar = zeta_star + u_star.iter().sum::<f64>() / k as f64;
 
-    let weights_after: BTreeMap<String, f64> =
-        tickers.iter().cloned().zip(w_star.iter().copied()).collect();
+    let weights_after: BTreeMap<String, f64> = tickers
+        .iter()
+        .cloned()
+        .zip(w_star.iter().copied())
+        .collect();
     let stats_after = historical_stats(&scenarios, &w_star, k);
     let turnover: f64 = w_star
         .iter()
@@ -429,7 +488,10 @@ pub fn run_cvar_rebalance(
             name: "turnover <= turnover_limit + tolerance".to_string(),
             passed: turnover <= input.turnover_limit + 1e-6,
             tolerance: 1e-6,
-            detail: format!("turnover={turnover:.6} turnover_limit={}", input.turnover_limit),
+            detail: format!(
+                "turnover={turnover:.6} turnover_limit={}",
+                input.turnover_limit
+            ),
         },
         InvariantCheck::approx_eq(
             "LP objective == directly-computed historical CVaR of the solution",
@@ -466,13 +528,19 @@ pub fn run_cvar_rebalance(
     let mut remediation_iterations = 0u32;
 
     if let (Some(policy), Some(model)) = (&input.policy, &regime_model) {
-        let mut current_result = evaluate_policy(policy, &build_portfolio(&final_weights_after), model, data)?;
-        let initial_breaches: std::collections::BTreeSet<String> =
-            current_result.checks.iter().filter(|c| !c.passed).map(|c| c.rule.clone()).collect();
+        let mut current_result =
+            evaluate_policy(policy, &build_portfolio(&final_weights_after), model, data)?;
+        let initial_breaches: std::collections::BTreeSet<String> = current_result
+            .checks
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.rule.clone())
+            .collect();
 
         while !current_result.all_passed && remediation_iterations < MAX_REMEDIATION_ITERATIONS {
             remediation_iterations += 1;
-            let candidate_confidence = (final_confidence_level + REMEDIATION_CONFIDENCE_STEP).min(0.999);
+            let candidate_confidence =
+                (final_confidence_level + REMEDIATION_CONFIDENCE_STEP).min(0.999);
             let mut retry_input = input.clone();
             retry_input.confidence_level = candidate_confidence;
             retry_input.policy = None;
@@ -483,21 +551,34 @@ pub fn run_cvar_rebalance(
                 // (or the original solve) achieved.
                 break;
             }
-            let retry_weights = retry_output.weights_after.clone().expect("optimal status implies weights_after");
-            current_result = evaluate_policy(policy, &build_portfolio(&retry_weights), model, data)?;
+            let retry_weights = retry_output
+                .weights_after
+                .clone()
+                .expect("optimal status implies weights_after");
+            current_result =
+                evaluate_policy(policy, &build_portfolio(&retry_weights), model, data)?;
 
             final_confidence_level = candidate_confidence;
             final_weights_after = retry_weights;
-            final_stats_after = retry_output.stats_after.expect("optimal status implies stats_after");
+            final_stats_after = retry_output
+                .stats_after
+                .expect("optimal status implies stats_after");
             final_turnover = retry_output.turnover;
             final_commission_cost_inr = retry_output.commission_cost_inr;
             final_lp_objective_cvar = retry_output.lp_objective_cvar;
             final_regime_vol_after = retry_output.regime_portfolio_vol_annualized_after;
         }
 
-        let final_breaches: std::collections::BTreeSet<String> =
-            current_result.checks.iter().filter(|c| !c.passed).map(|c| c.rule.clone()).collect();
-        policy_breaches_resolved = initial_breaches.difference(&final_breaches).cloned().collect();
+        let final_breaches: std::collections::BTreeSet<String> = current_result
+            .checks
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.rule.clone())
+            .collect();
+        policy_breaches_resolved = initial_breaches
+            .difference(&final_breaches)
+            .cloned()
+            .collect();
         policy_breaches_remaining = final_breaches.into_iter().collect();
         policy_result_after = Some(current_result);
     }

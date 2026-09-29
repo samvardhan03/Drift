@@ -107,7 +107,9 @@ impl From<compute::ComputeError> for BackendError {
             // reasoning for ReverseStress's "threshold unreachable within
             // bounds" case.
             compute::ComputeError::NoPriorSnapshot(message) => BackendError::Unrecognised(message),
-            compute::ComputeError::ReverseStressInfeasible(message) => BackendError::Unrecognised(message),
+            compute::ComputeError::ReverseStressInfeasible(message) => {
+                BackendError::Unrecognised(message)
+            }
             other => BackendError::Compute(other.to_string()),
         }
     }
@@ -154,7 +156,10 @@ pub struct NoAiBackend {
 }
 
 impl RealBackend {
-    pub fn new(gemini: agent::gemini::HttpGeminiClient, store: std::sync::Arc<store::SnapshotStore>) -> Self {
+    pub fn new(
+        gemini: agent::gemini::HttpGeminiClient,
+        store: std::sync::Arc<store::SnapshotStore>,
+    ) -> Self {
         RealBackend { gemini, store }
     }
 }
@@ -167,8 +172,11 @@ impl Backend for NoAiBackend {
         portfolio: Portfolio,
         policy: Option<RiskPolicy>,
     ) -> Result<EvidenceTrace, BackendError> {
-        let holdings: Vec<(String, f64)> =
-            portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+        let holdings: Vec<(String, f64)> = portfolio
+            .holdings
+            .iter()
+            .map(|h| (h.ticker.clone(), h.weight))
+            .collect();
         let ctx = compute::context::ExperimentContext {
             store: self.store.clone(),
             portfolio_hash: compute::portfolio::portfolio_hash(&holdings),
@@ -190,7 +198,8 @@ impl Backend for NoAiBackend {
         _policy: Option<RiskPolicy>,
     ) -> Result<PipelineResult, BackendError> {
         Err(BackendError::GeminiUnavailable(
-            "AI features require GEMINI_API_KEY — set the environment variable and restart".to_string(),
+            "AI features require GEMINI_API_KEY — set the environment variable and restart"
+                .to_string(),
         ))
     }
 }
@@ -203,8 +212,11 @@ impl Backend for RealBackend {
         portfolio: Portfolio,
         policy: Option<RiskPolicy>,
     ) -> Result<EvidenceTrace, BackendError> {
-        let holdings: Vec<(String, f64)> =
-            portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+        let holdings: Vec<(String, f64)> = portfolio
+            .holdings
+            .iter()
+            .map(|h| (h.ticker.clone(), h.weight))
+            .collect();
         let ctx = compute::context::ExperimentContext {
             store: self.store.clone(),
             portfolio_hash: compute::portfolio::portfolio_hash(&holdings),
@@ -225,15 +237,24 @@ impl Backend for RealBackend {
         conversation_history: Vec<ConversationTurn>,
         policy: Option<RiskPolicy>,
     ) -> Result<PipelineResult, BackendError> {
-        let holdings: Vec<(String, f64)> =
-            portfolio.holdings.iter().map(|h| (h.ticker.clone(), h.weight)).collect();
+        let holdings: Vec<(String, f64)> = portfolio
+            .holdings
+            .iter()
+            .map(|h| (h.ticker.clone(), h.weight))
+            .collect();
         let ctx = compute::context::ExperimentContext {
             store: self.store.clone(),
             portfolio_hash: compute::portfolio::portfolio_hash(&holdings),
             policy,
         };
-        let result =
-            agent::pipeline::run(&self.gemini, &message, portfolio, &conversation_history, &ctx).await?;
+        let result = agent::pipeline::run(
+            &self.gemini,
+            &message,
+            portfolio,
+            &conversation_history,
+            &ctx,
+        )
+        .await?;
         Ok(result)
     }
 }

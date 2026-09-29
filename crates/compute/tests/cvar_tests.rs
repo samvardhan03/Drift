@@ -58,13 +58,23 @@ fn heavy_tail_asset_is_cut_to_near_zero_when_turnover_allows() {
     };
 
     let (output, trace) = run_cvar_rebalance(&data.quality, &data, &input).unwrap();
-    assert_eq!(output.status, "optimal", "diagnostics: {:?}", output.diagnostics);
+    assert_eq!(
+        output.status, "optimal",
+        "diagnostics: {:?}",
+        output.diagnostics
+    );
 
     for inv in &trace.invariants {
-        assert!(inv.passed, "invariant failed: {} ({})", inv.name, inv.detail);
+        assert!(
+            inv.passed,
+            "invariant failed: {} ({})",
+            inv.name, inv.detail
+        );
     }
 
-    let weights_after = output.weights_after.expect("optimal solve has weights_after");
+    let weights_after = output
+        .weights_after
+        .expect("optimal solve has weights_after");
     assert!(
         weights_after["CRASH"] < 0.05,
         "CVaR minimization should cut the heavy-tail asset close to zero, got {}",
@@ -114,7 +124,11 @@ fn zero_turnover_limit_returns_starting_weights_unchanged() {
     };
 
     let (output, _trace) = run_cvar_rebalance(&data.quality, &data, &input).unwrap();
-    assert_eq!(output.status, "optimal", "diagnostics: {:?}", output.diagnostics);
+    assert_eq!(
+        output.status, "optimal",
+        "diagnostics: {:?}",
+        output.diagnostics
+    );
 
     let weights_after = output.weights_after.unwrap();
     assert!((weights_after["CRASH"] - 0.5).abs() < 1e-6);
@@ -141,11 +155,26 @@ fn per_name_cap_omitted_defaults_to_0_20_and_is_recorded_as_server_default() {
     let input = CvarRebalanceInput {
         portfolio: Portfolio {
             holdings: vec![
-                Holding { ticker: "CRASH".to_string(), weight: 0.6 },
-                Holding { ticker: "SAFE".to_string(), weight: 0.1 },
-                Holding { ticker: "SAFE2".to_string(), weight: 0.1 },
-                Holding { ticker: "SAFE3".to_string(), weight: 0.1 },
-                Holding { ticker: "SAFE4".to_string(), weight: 0.1 },
+                Holding {
+                    ticker: "CRASH".to_string(),
+                    weight: 0.6,
+                },
+                Holding {
+                    ticker: "SAFE".to_string(),
+                    weight: 0.1,
+                },
+                Holding {
+                    ticker: "SAFE2".to_string(),
+                    weight: 0.1,
+                },
+                Holding {
+                    ticker: "SAFE3".to_string(),
+                    weight: 0.1,
+                },
+                Holding {
+                    ticker: "SAFE4".to_string(),
+                    weight: 0.1,
+                },
             ],
             total_value_inr: 1_000_000.0,
         },
@@ -159,12 +188,22 @@ fn per_name_cap_omitted_defaults_to_0_20_and_is_recorded_as_server_default() {
     };
 
     let (output, trace) = run_cvar_rebalance(&data.quality, &data, &input).unwrap();
-    assert_eq!(output.status, "optimal", "diagnostics: {:?}", output.diagnostics);
-    assert_eq!(trace.model_params.cap_source.as_deref(), Some("server-default-0.20"));
+    assert_eq!(
+        output.status, "optimal",
+        "diagnostics: {:?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        trace.model_params.cap_source.as_deref(),
+        Some("server-default-0.20")
+    );
 
     let weights_after = output.weights_after.unwrap();
     for w in weights_after.values() {
-        assert!(*w <= 0.20 + 1e-6, "weight {w} exceeds the defaulted 0.20 cap");
+        assert!(
+            *w <= 0.20 + 1e-6,
+            "weight {w} exceeds the defaulted 0.20 cap"
+        );
     }
 }
 
@@ -197,7 +236,10 @@ fn per_name_cap_given_is_recorded_as_user_specified() {
     };
 
     let (_output, trace) = run_cvar_rebalance(&data.quality, &data, &input).unwrap();
-    assert_eq!(trace.model_params.cap_source.as_deref(), Some("user-specified"));
+    assert_eq!(
+        trace.model_params.cap_source.as_deref(),
+        Some("user-specified")
+    );
 }
 
 #[test]

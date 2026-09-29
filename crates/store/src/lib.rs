@@ -85,8 +85,11 @@ CREATE TABLE IF NOT EXISTS agent_execution_traces (
 /// that predates these columns (they're simply added, existing rows get
 /// `NULL`), and a no-op against a freshly `CREATE TABLE`d one (`SCHEMA`
 /// above already declares them, so `ensure_column` finds them present).
-const ADDITIVE_COLUMNS: &[(&str, &str)] =
-    &[("narration", "TEXT"), ("suggestion", "TEXT"), ("grounding_warnings", "TEXT")];
+const ADDITIVE_COLUMNS: &[(&str, &str)] = &[
+    ("narration", "TEXT"),
+    ("suggestion", "TEXT"),
+    ("grounding_warnings", "TEXT"),
+];
 
 fn ensure_column(conn: &Connection, name: &str, sql_type: &str) -> rusqlite::Result<()> {
     let exists: bool = conn.query_row(
@@ -95,7 +98,10 @@ fn ensure_column(conn: &Connection, name: &str, sql_type: &str) -> rusqlite::Res
         |row| row.get(0),
     )?;
     if !exists {
-        conn.execute(&format!("ALTER TABLE risk_snapshots ADD COLUMN {name} {sql_type}"), [])?;
+        conn.execute(
+            &format!("ALTER TABLE risk_snapshots ADD COLUMN {name} {sql_type}"),
+            [],
+        )?;
     }
     Ok(())
 }
@@ -171,7 +177,11 @@ impl SnapshotStore {
     /// Snapshots for `portfolio_hash`, newest first, at most `limit`. Used
     /// by Risk Drift (a later session) to compare a portfolio's risk over
     /// time.
-    pub fn latest_for_portfolio(&self, portfolio_hash: &str, limit: usize) -> Result<Vec<RiskSnapshot>> {
+    pub fn latest_for_portfolio(
+        &self,
+        portfolio_hash: &str,
+        limit: usize,
+    ) -> Result<Vec<RiskSnapshot>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, created_at, portfolio_hash, experiment_type, engine_version,
@@ -240,7 +250,9 @@ fn row_to_snapshot(row: &rusqlite::Row) -> rusqlite::Result<RiskSnapshot> {
     let smoothed_probs = smoothed_probs_json
         .map(|s| serde_json::from_str::<[f64; 3]>(&s))
         .transpose()
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))?;
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
+        })?;
 
     Ok(RiskSnapshot {
         id: row.get(0)?,
@@ -277,7 +289,9 @@ mod tests {
             trace_json: serde_json::json!({"experiment": experiment_type}).to_string(),
             narration: Some("Vol is 15.5% annualised.".to_string()),
             suggestion: Some("What if I reduce my turnover to 20%?".to_string()),
-            grounding_warnings: Some(serde_json::to_string(&vec!["unverified number '99%'".to_string()]).unwrap()),
+            grounding_warnings: Some(
+                serde_json::to_string(&vec!["unverified number '99%'".to_string()]).unwrap(),
+            ),
         }
     }
 
@@ -287,7 +301,10 @@ mod tests {
         let snapshot = sample_snapshot("abc123", "RiskDecomposition");
         let id = store.insert(&snapshot).unwrap();
 
-        let fetched = store.get(&id).unwrap().expect("just-inserted snapshot should be found");
+        let fetched = store
+            .get(&id)
+            .unwrap()
+            .expect("just-inserted snapshot should be found");
         assert_eq!(fetched.id, id);
         assert_eq!(fetched.portfolio_hash, "abc123");
         assert_eq!(fetched.experiment_type, "RiskDecomposition");
@@ -327,7 +344,11 @@ mod tests {
     fn latest_for_portfolio_returns_newest_first_and_respects_limit() {
         let store = SnapshotStore::open(":memory:").unwrap();
         let ids: Vec<String> = (0..5)
-            .map(|i| store.insert(&sample_snapshot("hash-a", &format!("Type{i}"))).unwrap())
+            .map(|i| {
+                store
+                    .insert(&sample_snapshot("hash-a", &format!("Type{i}")))
+                    .unwrap()
+            })
             .collect();
         // Also insert a snapshot for a different portfolio, which must never appear.
         store.insert(&sample_snapshot("hash-b", "Other")).unwrap();
@@ -351,7 +372,9 @@ mod tests {
     fn list_recent_returns_newest_first_and_respects_limit() {
         let store = SnapshotStore::open(":memory:").unwrap();
         for i in 0..5 {
-            store.insert(&sample_snapshot(&format!("hash-{i}"), "RiskDecomposition")).unwrap();
+            store
+                .insert(&sample_snapshot(&format!("hash-{i}"), "RiskDecomposition"))
+                .unwrap();
         }
         let recent = store.list_recent(2).unwrap();
         assert_eq!(recent.len(), 2);
@@ -386,8 +409,12 @@ mod tests {
             .unwrap();
         }
 
-        let store = SnapshotStore::open(&path).expect("open should migrate the pre-existing schema");
-        let old_row = store.get("old-id").unwrap().expect("pre-existing row should survive the migration");
+        let store =
+            SnapshotStore::open(&path).expect("open should migrate the pre-existing schema");
+        let old_row = store
+            .get("old-id")
+            .unwrap()
+            .expect("pre-existing row should survive the migration");
         assert_eq!(old_row.narration, None);
         assert_eq!(old_row.suggestion, None);
         assert_eq!(old_row.grounding_warnings, None);
@@ -403,10 +430,15 @@ mod tests {
     #[test]
     fn execution_trace_round_trips_through_the_store() {
         let store = SnapshotStore::open(":memory:").unwrap();
-        store.insert_execution_trace("exec-1", r#"{"id":"exec-1","narration":"hi"}"#).unwrap();
+        store
+            .insert_execution_trace("exec-1", r#"{"id":"exec-1","narration":"hi"}"#)
+            .unwrap();
 
         let fetched = store.get_execution_trace("exec-1").unwrap();
-        assert_eq!(fetched.as_deref(), Some(r#"{"id":"exec-1","narration":"hi"}"#));
+        assert_eq!(
+            fetched.as_deref(),
+            Some(r#"{"id":"exec-1","narration":"hi"}"#)
+        );
     }
 
     #[test]
@@ -419,10 +451,17 @@ mod tests {
     fn inserting_25_snapshots_does_not_evict_any() {
         let store = SnapshotStore::open(":memory:").unwrap();
         let ids: Vec<String> = (0..25)
-            .map(|i| store.insert(&sample_snapshot(&format!("hash-{i}"), "RiskDecomposition")).unwrap())
+            .map(|i| {
+                store
+                    .insert(&sample_snapshot(&format!("hash-{i}"), "RiskDecomposition"))
+                    .unwrap()
+            })
             .collect();
         for id in &ids {
-            assert!(store.get(id).unwrap().is_some(), "snapshot {id} should not have been evicted");
+            assert!(
+                store.get(id).unwrap().is_some(),
+                "snapshot {id} should not have been evicted"
+            );
         }
         assert_eq!(store.list_recent(100).unwrap().len(), 25);
     }

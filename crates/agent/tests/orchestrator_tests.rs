@@ -17,7 +17,9 @@ async fn single_tool_plan_is_parsed_as_is() {
         r#"[{"tool": "current_risk", "params": {}, "reason": "user asked about current risk"}]"#,
     )]);
 
-    let (plans, raw) = plan_tools(&client, "what's my portfolio risk?", &[]).await.unwrap();
+    let (plans, raw) = plan_tools(&client, "what's my portfolio risk?", &[])
+        .await
+        .unwrap();
 
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].tool, "current_risk");
@@ -53,9 +55,13 @@ async fn current_risk_then_risk_drift_preserves_plan_order() {
         ]"#,
     )]);
 
-    let (plans, _raw) = plan_tools(&client, "what is my risk and how has it changed since my last check?", &[])
-        .await
-        .unwrap();
+    let (plans, _raw) = plan_tools(
+        &client,
+        "what is my risk and how has it changed since my last check?",
+        &[],
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plans.len(), 2);
     assert_eq!(plans[0].tool, "current_risk");
@@ -68,7 +74,9 @@ async fn a_markdown_fenced_json_array_is_still_parsed() {
         "```json\n[{\"tool\": \"portfolio_performance\", \"params\": {}, \"reason\": \"asked about returns\"}]\n```",
     )]);
 
-    let (plans, _raw) = plan_tools(&client, "how has my portfolio done this year?", &[]).await.unwrap();
+    let (plans, _raw) = plan_tools(&client, "how has my portfolio done this year?", &[])
+        .await
+        .unwrap();
 
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].tool, "portfolio_performance");
@@ -78,7 +86,9 @@ async fn a_markdown_fenced_json_array_is_still_parsed() {
 async fn invalid_json_falls_back_to_a_single_current_risk_plan_and_keeps_the_raw_response() {
     let client = MockGeminiClient::new(vec![text_response("not valid json at all")]);
 
-    let (plans, raw) = plan_tools(&client, "some unparseable request", &[]).await.unwrap();
+    let (plans, raw) = plan_tools(&client, "some unparseable request", &[])
+        .await
+        .unwrap();
 
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].tool, "current_risk");
@@ -101,11 +111,16 @@ async fn an_off_topic_message_declines_instead_of_running_a_fallback_experiment(
         r#"[{"tool": "decline", "params": {}, "reason": "I can only help with questions about your portfolio's risk and performance."}]"#,
     )]);
 
-    let err = plan_tools(&client, "What is the weather in Mumbai?", &[]).await.unwrap_err();
+    let err = plan_tools(&client, "What is the weather in Mumbai?", &[])
+        .await
+        .unwrap_err();
 
     match err {
         agent::orchestrator::OrchestratorError::Unrecognised(text) => {
-            assert_eq!(text, "I can only help with questions about your portfolio's risk and performance.");
+            assert_eq!(
+                text,
+                "I can only help with questions about your portfolio's risk and performance."
+            );
         }
         other => panic!("expected Unrecognised, got {other:?}"),
     }

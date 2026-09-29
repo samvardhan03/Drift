@@ -38,31 +38,34 @@ enum Layout {
 
 type Record = BTreeMap<String, String>;
 
-pub async fn post_portfolio_upload(mut multipart: Multipart) -> Result<axum::Json<UploadResponse>, ApiError> {
+pub async fn post_portfolio_upload(
+    mut multipart: Multipart,
+) -> Result<axum::Json<UploadResponse>, ApiError> {
     let mut filename: Option<String> = None;
     let mut bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError::bad_request("invalid_upload", format!("malformed multipart body: {e}")))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        ApiError::bad_request("invalid_upload", format!("malformed multipart body: {e}"))
+    })? {
         if field.name() == Some("file") {
             filename = field.file_name().map(|s| s.to_string());
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| ApiError::bad_request("invalid_upload", format!("failed to read file bytes: {e}")))?;
+            let data = field.bytes().await.map_err(|e| {
+                ApiError::bad_request("invalid_upload", format!("failed to read file bytes: {e}"))
+            })?;
             bytes = Some(data.to_vec());
         }
     }
 
-    let filename =
-        filename.ok_or_else(|| ApiError::bad_request("invalid_upload", "missing a \"file\" form field"))?;
-    let bytes = bytes.ok_or_else(|| ApiError::bad_request("invalid_upload", "missing a \"file\" form field"))?;
+    let filename = filename
+        .ok_or_else(|| ApiError::bad_request("invalid_upload", "missing a \"file\" form field"))?;
+    let bytes = bytes
+        .ok_or_else(|| ApiError::bad_request("invalid_upload", "missing a \"file\" form field"))?;
 
     if bytes.is_empty() {
-        return Err(ApiError::bad_request("empty_file", "uploaded file is empty"));
+        return Err(ApiError::bad_request(
+            "empty_file",
+            "uploaded file is empty",
+        ));
     }
 
     let lower_name = filename.to_lowercase();
@@ -78,7 +81,10 @@ pub async fn post_portfolio_upload(mut multipart: Multipart) -> Result<axum::Jso
     };
 
     if records.is_empty() {
-        return Err(ApiError::bad_request("empty_file", "file contains no data rows"));
+        return Err(ApiError::bad_request(
+            "empty_file",
+            "file contains no data rows",
+        ));
     }
 
     let layout = detect_layout(&records[0])?;
@@ -88,7 +94,10 @@ pub async fn post_portfolio_upload(mut multipart: Multipart) -> Result<axum::Jso
     };
 
     let row_count = holdings.len();
-    let portfolio = Portfolio { holdings, total_value_inr };
+    let portfolio = Portfolio {
+        holdings,
+        total_value_inr,
+    };
     validate_portfolio(&portfolio)?;
 
     Ok(axum::Json(UploadResponse {
@@ -123,10 +132,17 @@ fn detect_layout(first_record: &Record) -> Result<Layout, ApiError> {
 }
 
 fn parse_number(record: &Record, name: &str, row_index: usize) -> Result<f64, ApiError> {
-    let raw = field(record, name)
-        .ok_or_else(|| ApiError::bad_request("missing_columns", format!("row {row_index}: missing \"{name}\"")))?;
+    let raw = field(record, name).ok_or_else(|| {
+        ApiError::bad_request(
+            "missing_columns",
+            format!("row {row_index}: missing \"{name}\""),
+        )
+    })?;
     raw.trim().parse::<f64>().map_err(|_| {
-        ApiError::bad_request("invalid_upload", format!("row {row_index}: \"{name}\" is not a number: {raw:?}"))
+        ApiError::bad_request(
+            "invalid_upload",
+            format!("row {row_index}: \"{name}\" is not a number: {raw:?}"),
+        )
     })
 }
 
@@ -135,11 +151,17 @@ fn parse_number(record: &Record, name: &str, row_index: usize) -> Result<f64, Ap
 /// `(normalised_ticker, Some("ORIGINAL -> NORMALISED") if it changed)`.
 fn normalise_ticker(raw: &str) -> (String, Option<String>) {
     let ticker = raw.trim();
-    let looks_bare_nse =
-        !ticker.contains('.') && !ticker.is_empty() && ticker.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    let looks_bare_nse = !ticker.contains('.')
+        && !ticker.is_empty()
+        && ticker
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
     if looks_bare_nse {
         let normalised = format!("{ticker}.NS");
-        (normalised.clone(), Some(format!("{ticker} -> {normalised}")))
+        (
+            normalised.clone(),
+            Some(format!("{ticker} -> {normalised}")),
+        )
     } else {
         (ticker.to_string(), None)
     }
@@ -150,8 +172,9 @@ fn build_weight_based(records: &[Record]) -> Result<(Vec<Holding>, Vec<String>, 
     let mut tickers_normalised = Vec::new();
 
     for (i, record) in records.iter().enumerate() {
-        let raw_ticker = field(record, "ticker")
-            .ok_or_else(|| ApiError::bad_request("missing_columns", format!("row {i}: missing \"ticker\"")))?;
+        let raw_ticker = field(record, "ticker").ok_or_else(|| {
+            ApiError::bad_request("missing_columns", format!("row {i}: missing \"ticker\""))
+        })?;
         let (ticker, note) = normalise_ticker(raw_ticker);
         if let Some(note) = note {
             tickers_normalised.push(note);
@@ -168,8 +191,9 @@ fn build_value_based(records: &[Record]) -> Result<(Vec<Holding>, Vec<String>, f
     let mut tickers_normalised = Vec::new();
 
     for (i, record) in records.iter().enumerate() {
-        let raw_ticker = field(record, "ticker")
-            .ok_or_else(|| ApiError::bad_request("missing_columns", format!("row {i}: missing \"ticker\"")))?;
+        let raw_ticker = field(record, "ticker").ok_or_else(|| {
+            ApiError::bad_request("missing_columns", format!("row {i}: missing \"ticker\""))
+        })?;
         let (ticker, note) = normalise_ticker(raw_ticker);
         if let Some(note) = note {
             tickers_normalised.push(note);
@@ -185,7 +209,11 @@ fn build_value_based(records: &[Record]) -> Result<(Vec<Holding>, Vec<String>, f
         .into_iter()
         .map(|(ticker, value_inr)| Holding {
             ticker,
-            weight: if total_value_inr > 0.0 { round6(value_inr / total_value_inr) } else { 0.0 },
+            weight: if total_value_inr > 0.0 {
+                round6(value_inr / total_value_inr)
+            } else {
+                0.0
+            },
         })
         .collect();
 
@@ -193,17 +221,23 @@ fn build_value_based(records: &[Record]) -> Result<(Vec<Holding>, Vec<String>, f
 }
 
 fn parse_csv(bytes: &[u8]) -> Result<Vec<Record>, ApiError> {
-    let mut reader = csv::ReaderBuilder::new().has_headers(true).from_reader(bytes);
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(bytes);
     let headers: Vec<String> = reader
         .headers()
-        .map_err(|e| ApiError::bad_request("invalid_upload", format!("failed to read CSV headers: {e}")))?
+        .map_err(|e| {
+            ApiError::bad_request("invalid_upload", format!("failed to read CSV headers: {e}"))
+        })?
         .iter()
         .map(|h| h.trim().to_lowercase())
         .collect();
 
     let mut records = Vec::new();
     for result in reader.records() {
-        let row = result.map_err(|e| ApiError::bad_request("invalid_upload", format!("malformed CSV row: {e}")))?;
+        let row = result.map_err(|e| {
+            ApiError::bad_request("invalid_upload", format!("malformed CSV row: {e}"))
+        })?;
         let mut record = Record::new();
         for (header, value) in headers.iter().zip(row.iter()) {
             record.insert(header.clone(), value.trim().to_string());
@@ -215,24 +249,28 @@ fn parse_csv(bytes: &[u8]) -> Result<Vec<Record>, ApiError> {
 
 fn parse_xlsx(bytes: &[u8]) -> Result<Vec<Record>, ApiError> {
     let cursor = Cursor::new(bytes.to_vec());
-    let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
-        .map_err(|e| ApiError::bad_request("invalid_upload", format!("failed to open XLSX file: {e}")))?;
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor).map_err(|e| {
+        ApiError::bad_request("invalid_upload", format!("failed to open XLSX file: {e}"))
+    })?;
 
     let sheet_name = workbook
         .sheet_names()
         .first()
         .cloned()
         .ok_or_else(|| ApiError::bad_request("invalid_upload", "XLSX file has no sheets"))?;
-    let range = workbook
-        .worksheet_range(&sheet_name)
-        .map_err(|e| ApiError::bad_request("invalid_upload", format!("failed to read XLSX sheet: {e}")))?;
+    let range = workbook.worksheet_range(&sheet_name).map_err(|e| {
+        ApiError::bad_request("invalid_upload", format!("failed to read XLSX sheet: {e}"))
+    })?;
 
     let mut rows = range.rows();
     let header_row = match rows.next() {
         Some(row) => row,
         None => return Ok(Vec::new()),
     };
-    let headers: Vec<String> = header_row.iter().map(|cell| cell_to_string(cell).to_lowercase()).collect();
+    let headers: Vec<String> = header_row
+        .iter()
+        .map(|cell| cell_to_string(cell).to_lowercase())
+        .collect();
 
     let mut records = Vec::new();
     for row in rows {

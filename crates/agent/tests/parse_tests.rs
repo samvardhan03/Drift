@@ -35,9 +35,14 @@ async fn parses_factor_shock_function_call() {
     let client = MockGeminiClient::new(vec![function_call_response(FACTOR_SHOCK_FUNCTION, args)]);
 
     let portfolio = two_stock_portfolio();
-    let experiment = parse_experiment(&client, "what if the market drops 12%", portfolio.clone(), &[])
-        .await
-        .unwrap();
+    let experiment = parse_experiment(
+        &client,
+        "what if the market drops 12%",
+        portfolio.clone(),
+        &[],
+    )
+    .await
+    .unwrap();
 
     match experiment {
         Experiment::FactorShock(input) => {
@@ -53,8 +58,10 @@ async fn parses_factor_shock_function_call() {
 #[tokio::test]
 async fn parses_risk_decomposition_function_call() {
     let args = serde_json::json!({});
-    let client =
-        MockGeminiClient::new(vec![function_call_response(RISK_DECOMPOSITION_FUNCTION, args)]);
+    let client = MockGeminiClient::new(vec![function_call_response(
+        RISK_DECOMPOSITION_FUNCTION,
+        args,
+    )]);
 
     let portfolio = two_stock_portfolio();
     let experiment = parse_experiment(&client, "what's my portfolio risk?", portfolio.clone(), &[])
@@ -72,8 +79,10 @@ async fn parses_risk_decomposition_function_call() {
 #[tokio::test]
 async fn parses_portfolio_performance_function_call() {
     let args = serde_json::json!({});
-    let client =
-        MockGeminiClient::new(vec![function_call_response(PORTFOLIO_PERFORMANCE_FUNCTION, args)]);
+    let client = MockGeminiClient::new(vec![function_call_response(
+        PORTFOLIO_PERFORMANCE_FUNCTION,
+        args,
+    )]);
 
     let portfolio = two_stock_portfolio();
     let experiment = parse_experiment(
@@ -117,9 +126,14 @@ async fn parses_risk_drift_function_call_with_a_specific_baseline_snapshot_id() 
     let client = MockGeminiClient::new(vec![function_call_response(RISK_DRIFT_FUNCTION, args)]);
 
     let portfolio = two_stock_portfolio();
-    let experiment = parse_experiment(&client, "compare my risk to snapshot abc-123", portfolio.clone(), &[])
-        .await
-        .unwrap();
+    let experiment = parse_experiment(
+        &client,
+        "compare my risk to snapshot abc-123",
+        portfolio.clone(),
+        &[],
+    )
+    .await
+    .unwrap();
 
     match experiment {
         Experiment::RiskDrift(input) => {
@@ -135,9 +149,14 @@ async fn parses_reverse_stress_function_call_with_null_factor_bounds() {
     let client = MockGeminiClient::new(vec![function_call_response(REVERSE_STRESS_FUNCTION, args)]);
 
     let portfolio = two_stock_portfolio();
-    let experiment = parse_experiment(&client, "what shock would wipe out 5 lakh rupees?", portfolio.clone(), &[])
-        .await
-        .unwrap();
+    let experiment = parse_experiment(
+        &client,
+        "what shock would wipe out 5 lakh rupees?",
+        portfolio.clone(),
+        &[],
+    )
+    .await
+    .unwrap();
 
     match experiment {
         Experiment::ReverseStress(input) => {
@@ -168,7 +187,9 @@ async fn parses_reverse_stress_function_call_with_explicit_factor_bounds() {
 
     match experiment {
         Experiment::ReverseStress(input) => {
-            let bounds = input.factor_bounds.expect("factor_bounds should be present");
+            let bounds = input
+                .factor_bounds
+                .expect("factor_bounds should be present");
             assert_eq!(bounds.get("MARKET"), Some(&(-50.0, 0.0)));
             assert_eq!(bounds.get("BRENT"), Some(&(-30.0, 80.0)));
         }
@@ -186,9 +207,14 @@ async fn parses_cvar_rebalance_function_call() {
     let client = MockGeminiClient::new(vec![function_call_response(CVAR_REBALANCE_FUNCTION, args)]);
 
     let portfolio = two_stock_portfolio();
-    let experiment = parse_experiment(&client, "rebalance to cut tail risk", portfolio.clone(), &[])
-        .await
-        .unwrap();
+    let experiment = parse_experiment(
+        &client,
+        "rebalance to cut tail risk",
+        portfolio.clone(),
+        &[],
+    )
+    .await
+    .unwrap();
 
     match experiment {
         Experiment::CvarRebalance(input) => {
@@ -208,10 +234,14 @@ async fn parses_policy_check_function_call_with_a_partial_policy() {
     let client = MockGeminiClient::new(vec![function_call_response(POLICY_CHECK_FUNCTION, args)]);
 
     let portfolio = two_stock_portfolio();
-    let experiment =
-        parse_experiment(&client, "is my portfolio within risk limits?", portfolio.clone(), &[])
-            .await
-            .unwrap();
+    let experiment = parse_experiment(
+        &client,
+        "is my portfolio within risk limits?",
+        portfolio.clone(),
+        &[],
+    )
+    .await
+    .unwrap();
 
     match experiment {
         Experiment::PolicyCheck(input) => {
@@ -262,8 +292,10 @@ async fn caller_portfolio_overrides_any_portfolio_in_the_function_call_args() {
     let args = serde_json::json!({
         "portfolio": { "holdings": [{"ticker": "MADE_UP.NS", "weight": 1.0}], "total_value_inr": 1.0 },
     });
-    let client =
-        MockGeminiClient::new(vec![function_call_response(RISK_DECOMPOSITION_FUNCTION, args)]);
+    let client = MockGeminiClient::new(vec![function_call_response(
+        RISK_DECOMPOSITION_FUNCTION,
+        args,
+    )]);
 
     let portfolio = two_stock_portfolio();
     let experiment = parse_experiment(&client, "risk please", portfolio.clone(), &[])
@@ -302,11 +334,20 @@ async fn conversation_history_is_passed_as_prior_turns_in_order() {
     let request = client.last_request();
     assert_eq!(request.contents.len(), 3, "2 prior turns + current message");
     assert_eq!(request.contents[0].role.as_deref(), Some("user"));
-    assert_eq!(request.contents[0].parts[0].text.as_deref(), Some("what's my portfolio risk?"));
+    assert_eq!(
+        request.contents[0].parts[0].text.as_deref(),
+        Some("what's my portfolio risk?")
+    );
     assert_eq!(request.contents[1].role.as_deref(), Some("model"));
-    assert_eq!(request.contents[1].parts[0].text.as_deref(), Some("Vol is 15.5% annualised."));
+    assert_eq!(
+        request.contents[1].parts[0].text.as_deref(),
+        Some("Vol is 15.5% annualised.")
+    );
     assert_eq!(request.contents[2].role.as_deref(), Some("user"));
-    assert_eq!(request.contents[2].parts[0].text.as_deref(), Some("now try with 25% turnover"));
+    assert_eq!(
+        request.contents[2].parts[0].text.as_deref(),
+        Some("now try with 25% turnover")
+    );
 }
 
 /// An empty `conversation_history` must produce the exact same request
@@ -315,7 +356,10 @@ async fn conversation_history_is_passed_as_prior_turns_in_order() {
 #[tokio::test]
 async fn empty_conversation_history_matches_pre_existing_request_shape() {
     let args = serde_json::json!({});
-    let client = MockGeminiClient::new(vec![function_call_response(RISK_DECOMPOSITION_FUNCTION, args)]);
+    let client = MockGeminiClient::new(vec![function_call_response(
+        RISK_DECOMPOSITION_FUNCTION,
+        args,
+    )]);
 
     let portfolio = two_stock_portfolio();
     parse_experiment(&client, "what's my portfolio risk?", portfolio, &[])
@@ -337,9 +381,14 @@ async fn text_response_is_unrecognised() {
         "I cannot map this message to a supported experiment.",
     )]);
 
-    let err = parse_experiment(&client, "what's the weather today?", two_stock_portfolio(), &[])
-        .await
-        .unwrap_err();
+    let err = parse_experiment(
+        &client,
+        "what's the weather today?",
+        two_stock_portfolio(),
+        &[],
+    )
+    .await
+    .unwrap_err();
 
     match err {
         ParseError::Unrecognised(text) => {
