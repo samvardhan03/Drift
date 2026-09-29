@@ -1,0 +1,19 @@
+{
+  "type": "RiskDecomposition",
+  "portfolio": {
+    "holdings": [
+      { "ticker": "RELIANCE.NS", "weight": 0.15 },
+      { "ticker": "HDFCBANK.NS", "weight": 0.13 },
+      { "ticker": "ICICIBANK.NS", "weight": 0.12 },
+      { "ticker": "INFY.NS", "weight": 0.10 },
+      { "ticker": "TCS.NS", "weight": 0.10 },
+      { "ticker": "LT.NS", "weight": 0.09 },
+      { "ticker": "ITC.NS", "weight": 0.09 },
+      { "ticker": "KOTAKBANK.NS", "weight": 0.08 },
+      { "ticker": "BHARTIARTL.NS", "weight": 0.08 },
+      { "ticker": "TMPV.NS", "weight": 0.06 }
+    ],
+    "total_value_inr": 10000000.0
+  },
+  "window": 252
+}

@@ -1,6 +1,6 @@
 MIT License
 
-Copyright 2026 Samvardhan Singh Shekhawat and Yash Elliott
+Copyright (c) 2026 drift-risk-copilot contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,7 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-This license applies to the public demonstration shell only. The proprietary
-inference engine (regime models, signal construction, portfolio optimisation)
-is not part of this repository and is not licensed under MIT.

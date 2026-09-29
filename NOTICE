@@ -1,0 +1,24 @@
+Drift — open-core risk research platform
+
+Copyright 2024–2025 the Drift contributors (see git log)
+
+The source code in this repository (crates/agent, crates/compute,
+crates/server, crates/store) is licensed under the MIT License.
+See LICENSE for the full text.
+
+------------------------------------------------------------------------
+
+The Drift Engine is proprietary software and is NOT included in this
+repository. It is available as a hosted service. Contact the maintainers
+for access details.
+
+------------------------------------------------------------------------
+
+DISCLAIMER
+
+This software is a research tool. It does not constitute investment
+advice, financial advice, or any form of regulated financial service.
+The maintainers are not SEBI-registered investment advisers. Any
+results produced by this software are for informational purposes only.
+You are solely responsible for any investment decisions you make.
+Past performance does not guarantee future results.
