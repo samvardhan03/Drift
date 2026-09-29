@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drift-risk-copilot</title>
+<style>
+  :root {
+    --accent: #2563EB;
+    --fg: #111;
+    --bg: #fff;
+    --border: #ddd;
+    --muted: #666;
+    --grey-bg: #F3F4F6;
+    --warn-bg: #FEF3C7;
+    --warn-border: #D97706;
+    --err-bg: #FEF2F2;
+    --err-border: #B91C1C;
+    --err-fg: #B91C1C;
+    --ok: #16A34A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.4;
+  }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header .title h1 { margin: 0; font-size: 17px; }
+  header .title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  #health-indicator { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #health-indicator .dot { font-size: 13px; }
+  #health-indicator.live .dot { color: var(--ok); }
+  #health-indicator.offline .dot { color: var(--err-fg); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  @media (min-width: 900px) {
+    main { grid-template-columns: 420px 1fr; align-items: start; }
+  }
+
+  section {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    margin-bottom: 16px;
+    background: var(--bg);
+  }
+  section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+
+  label { display: block; font-size: 12px; margin-bottom: 4px; color: var(--muted); }
+  input[type=text], input[type=number], textarea {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  textarea { resize: vertical; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  table th { text-align: left; font-size: 11px; color: var(--muted); font-weight: normal; padding-bottom: 4px; }
+  table td { padding: 3px 4px 3px 0; }
+  table td input { padding: 4px 6px; }
+
+  button {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  .toolbar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .hidden { display: none !important; }
+  .field { margin-bottom: 10px; }
+
+  details > summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--fg);
+    font-weight: 600;
+    margin-bottom: 10px;
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  #portfolio-details[open] > summary { margin-bottom: 12px; }
+
+  .scenario-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .scenario-btn {
+    flex: 1 1 auto;
+    min-width: 110px;
+    text-align: center;
+    font-size: 12px;
+    padding: 8px 6px;
+  }
+  .scenario-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+  .bubbles { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .bubble {
+    max-width: 85%;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 6px 9px;
+    border-radius: 10px;
+    background: var(--grey-bg);
+    color: var(--fg);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .bubble.user { align-self: flex-end; }
+  .bubble.assistant { align-self: flex-start; }
+  .clear-link {
+    background: none; border: none; color: var(--muted);
+    font-size: 11px; text-decoration: underline; padding: 0; margin-bottom: 8px;
+  }
+
+  .inline-err { font-size: 12px; color: var(--err-fg); margin-top: 6px; }
+
+  .empty-state { color: var(--muted); font-size: 13px; }
+
+  .regime-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--grey-bg);
+    margin-bottom: 12px;
+  }
+  .regime-pill .dot { font-size: 11px; }
+  .regime-pill.bull .dot { color: var(--ok); }
+  .regime-pill.bear .dot { color: var(--warn-border); }
+  .regime-pill.crisis .dot { color: var(--err-fg); }
+
+  .banner-warn {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 13px;
+    margin-bottom: 10px;
+  }
+  .banner-err {
+    background: var(--err-bg);
+    border: 1px solid var(--err-border);
+    color: var(--err-fg);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 13px;
+    margin-bottom: 10px;
+  }
+
+  .narration-text { font-size: 11pt; line-height: 1.6; margin: 0 0 14px; white-space: pre-wrap; }
+
+  .suggestion-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border-style: dashed;
+    margin-bottom: 12px;
+  }
+  .suggestion-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); border-style: solid; }
+
+  .download-btn { margin-bottom: 16px; }
+
+  pre.trace {
+    background: #f7f7f7;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px;
+    font-size: 9pt;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: auto;
+    max-height: 480px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">
+    <h1>drift-risk-copilot</h1>
+    <p>Portfolio risk experiments, explained in plain language and cross-checked against the numbers.</p>
+  </div>
+  <div id="health-indicator"><span class="dot">&#9679;</span> <span id="health-text">checking&hellip;</span></div>
+</header>
+
+<main>
+  <div>
+    <details id="portfolio-details">
+      <summary>Edit Portfolio &#9662;</summary>
+      <section style="border:none;padding:0;margin:0;">
+        <table id="holdings-table">
+          <thead><tr><th>Ticker</th><th>Weight</th><th></th></tr></thead>
+          <tbody id="holdings-body"></tbody>
+        </table>
+        <div class="toolbar">
+          <button type="button" id="add-row">+ Add holding</button>
+        </div>
+        <div class="field" style="margin-top: 12px;">
+          <label for="total-value">Total value (INR)</label>
+          <input type="number" id="total-value" value="10000000" min="0" step="1000">
+        </div>
+        <div id="portfolio-err" class="inline-err hidden"></div>
+      </section>
+    </details>
+
+    <section id="scenarios-section">
+      <h2>Historical scenarios</h2>
+      <div id="scenario-bar" class="scenario-bar">
+        <span class="empty-state">Loading scenarios&hellip;</span>
+      </div>
+    </section>
+
+    <section id="conversation-section">
+      <h2>Ask</h2>
+      <div id="bubbles" class="bubbles"></div>
+      <button type="button" id="clear-conversation" class="clear-link hidden">Clear conversation</button>
+      <div class="field">
+        <textarea id="message" rows="3" placeholder="Ask anything &mdash; e.g. Where is my risk concentrated?"></textarea>
+      </div>
+      <div class="toolbar">
+        <button type="button" id="send-btn" class="primary">Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section id="output-section">
+      <h2>Result</h2>
+      <div id="output-empty" class="empty-state">Ask a question or pick a historical scenario to see a narrated result here.</div>
+      <div id="output-thinking" class="empty-state hidden">Thinking&hellip;</div>
+      <div id="output-error" class="banner-err hidden"></div>
+
+      <div id="output-body" class="hidden">
+        <div id="regime-pill" class="regime-pill hidden"><span class="dot">&#9679;</span><span id="regime-label"></span></div>
+        <div id="grounding-banner" class="banner-warn hidden">&#9888; Some numbers could not be verified against model output.</div>
+        <p class="narration-text" id="narration-text"></p>
+
+        <button type="button" id="suggestion-btn" class="suggestion-btn hidden"></button>
+
+        <button type="button" id="download-btn" class="download-btn hidden">&darr; Download PDF Report</button>
+
+        <details id="trace-details">
+          <summary>Evidence Trace &#9662;</summary>
+          <div class="toolbar" style="margin: 0 0 8px;">
+            <button type="button" id="copy-trace" class="small">Copy to clipboard</button>
+          </div>
+          <pre class="trace" id="trace-json"></pre>
+        </details>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer>AI Builder Cup 2026 &middot; BFSI track</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  const DEFAULT_HOLDINGS = [
+    ["RELIANCE.NS", 0.10], ["HDFCBANK.NS", 0.10], ["ICICIBANK.NS", 0.10],
+    ["INFY.NS", 0.10], ["TCS.NS", 0.10], ["LT.NS", 0.10],
+    ["ITC.NS", 0.10], ["KOTAKBANK.NS", 0.10], ["BHARTIARTL.NS", 0.10], ["TMPV.NS", 0.10],
+  ];
+  const SCENARIO_BUTTON_LABELS = {
+    covid_crash: "COVID Crash",
+    ilfs_contagion: "IL&FS Contagion",
+    taper_tantrum_2013: "Taper Tantrum 2013",
+  };
+
+  const healthIndicator = document.getElementById("health-indicator");
+  const healthText = document.getElementById("health-text");
+  const holdingsBody = document.getElementById("holdings-body");
+  const addRowBtn = document.getElementById("add-row");
+  const totalValueInput = document.getElementById("total-value");
+  const portfolioErr = document.getElementById("portfolio-err");
+  const scenarioBar = document.getElementById("scenario-bar");
+  const bubblesEl = document.getElementById("bubbles");
+  const clearConversationBtn = document.getElementById("clear-conversation");
+  const messageInput = document.getElementById("message");
+  const sendBtn = document.getElementById("send-btn");
+  const outputEmpty = document.getElementById("output-empty");
+  const outputThinking = document.getElementById("output-thinking");
+  const outputError = document.getElementById("output-error");
+  const outputBody = document.getElementById("output-body");
+  const regimePill = document.getElementById("regime-pill");
+  const regimeLabelEl = document.getElementById("regime-label");
+  const groundingBanner = document.getElementById("grounding-banner");
+  const narrationText = document.getElementById("narration-text");
+  const suggestionBtn = document.getElementById("suggestion-btn");
+  const downloadBtn = document.getElementById("download-btn");
+  const traceJson = document.getElementById("trace-json");
+  const copyTraceBtn = document.getElementById("copy-trace");
+
+  // -- state ---------------------------------------------------------
+  let conversationHistory = []; // [{role, content}, ...]
+  let scenarios = [];
+  let lastResultId = null;
+  let lastExperimentType = null;
+  let requestInFlight = false;
+
+  // -- health indicator ------------------------------------------------
+  fetch("/health").then(function (r) {
+    if (!r.ok) throw new Error("not ok");
+    return r.json();
+  }).then(function () {
+    healthIndicator.className = "live";
+    healthText.textContent = "API live";
+  }).catch(function () {
+    healthIndicator.className = "offline";
+    healthText.textContent = "API offline";
+  });
+
+  // -- portfolio builder -----------------------------------------------
+  function addHoldingRow(ticker, weight) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td><input type="text" class="ticker" placeholder="RELIANCE.NS" value="' + (ticker || "") + '"></td>' +
+      '<td><input type="number" class="weight" step="0.01" min="0" max="1" value="' + (weight != null ? weight : "") + '"></td>' +
+      '<td><button type="button" class="small remove-row">&times;</button></td>';
+    tr.querySelector(".remove-row").addEventListener("click", function () { tr.remove(); });
+    holdingsBody.appendChild(tr);
+  }
+
+  DEFAULT_HOLDINGS.forEach(function (h) { addHoldingRow(h[0], h[1]); });
+  addRowBtn.addEventListener("click", function () { addHoldingRow("", ""); });
+
+  function readPortfolio() {
+    const holdings = [];
+    holdingsBody.querySelectorAll("tr").forEach(function (tr) {
+      const ticker = tr.querySelector(".ticker").value.trim();
+      const weight = parseFloat(tr.querySelector(".weight").value);
+      if (ticker && !isNaN(weight)) holdings.push({ ticker: ticker, weight: weight });
+    });
+    const totalValue = parseFloat(totalValueInput.value);
+    return { holdings: holdings, total_value_inr: isNaN(totalValue) ? 0 : totalValue };
+  }
+
+  // Client-side pre-check only; the server's own validation (weight <= 0,
+  // < 2 holdings, etc.) still applies and surfaces via the 400 handler below.
+  function checkWeightsSumToOne(portfolio) {
+    const sum = portfolio.holdings.reduce(function (s, h) { return s + h.weight; }, 0);
+    if (Math.abs(sum - 1.0) > 0.01) {
+      return "Weights sum to " + sum.toFixed(4) + "; they must sum to 1.0 (+/- 0.01).";
+    }
+    return null;
+  }
+
+  function showPortfolioError(message) {
+    if (message) {
+      portfolioErr.textContent = message;
+      portfolioErr.classList.remove("hidden");
+    } else {
+      portfolioErr.classList.add("hidden");
+    }
+  }
+
+  // -- historical scenarios ---------------------------------------------
+  fetch("/scenarios").then(function (r) { return r.json(); }).then(function (body) {
+    scenarios = body;
+    scenarioBar.innerHTML = "";
+    scenarios.forEach(function (scenario) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "scenario-btn";
+      btn.textContent = SCENARIO_BUTTON_LABELS[scenario.id] || scenario.name;
+      btn.title = scenario.description;
+      btn.addEventListener("click", function () {
+        const text = scenarioMessage(scenario);
+        messageInput.value = text;
+        sendMessage(text);
+      });
+      scenarioBar.appendChild(btn);
+    });
+  }).catch(function () {
+    scenarioBar.innerHTML = '<span class="empty-state">Could not load scenarios.</span>';
+  });
+
+  // The parser (agent::parse) extracts FactorShock parameters from the
+  // message text via Gemini function-calling -- it has no access to
+  // /scenarios data itself, so naming the scenario alone ("What would the
+  // COVID Crash have done...") gives Gemini nothing to extract and it
+  // correctly refuses (422 unrecognised_request). The message has to state
+  // the actual shock numbers already fetched into `scenario.shocks_pct`.
+  const FACTOR_ORDER = ["MARKET", "USDINR", "BRENT", "GOLD_USD", "RATES_PROXY"];
+  function scenarioMessage(scenario) {
+    const parts = FACTOR_ORDER
+      .filter(function (f) { return scenario.shocks_pct[f] !== undefined; })
+      .map(function (f) {
+        const v = scenario.shocks_pct[f];
+        return f + " " + (v > 0 ? "+" : "") + v + "%";
+      });
+    return "Apply the " + scenario.name + " scenario to my portfolio: " + parts.join(", ") + ".";
+  }
+
+  function setScenarioButtonsDisabled(disabled) {
+    scenarioBar.querySelectorAll(".scenario-btn").forEach(function (b) { b.disabled = disabled; });
+  }
+
+  // -- conversation bubbles ----------------------------------------------
+  function renderBubbles() {
+    bubblesEl.innerHTML = "";
+    const last3 = conversationHistory.slice(-3);
+    last3.forEach(function (turn) {
+      const div = document.createElement("div");
+      div.className = "bubble " + (turn.role === "user" ? "user" : "assistant");
+      div.textContent = turn.content;
+      bubblesEl.appendChild(div);
+    });
+    clearConversationBtn.classList.toggle("hidden", conversationHistory.length === 0);
+  }
+
+  clearConversationBtn.addEventListener("click", function () {
+    conversationHistory = [];
+    renderBubbles();
+  });
+
+  // -- output rendering ----------------------------------------------------
+  function showThinking() {
+    outputEmpty.classList.add("hidden");
+    outputError.classList.add("hidden");
+    outputBody.classList.add("hidden");
+    outputThinking.classList.remove("hidden");
+  }
+
+  function showOutputError(message) {
+    outputThinking.classList.add("hidden");
+    outputEmpty.classList.add("hidden");
+    outputBody.classList.add("hidden");
+    outputError.classList.remove("hidden");
+    outputError.textContent = message;
+  }
+
+  function regimeClass(label) {
+    if (label === "Bull") return "bull";
+    if (label === "Bear") return "bear";
+    if (label === "Crisis") return "crisis";
+    return "";
+  }
+
+  function showResult(body) {
+    outputThinking.classList.add("hidden");
+    outputEmpty.classList.add("hidden");
+    outputError.classList.add("hidden");
+    outputBody.classList.remove("hidden");
+
+    const regimeState = body.trace && body.trace.model_params && body.trace.model_params.regime_state;
+    if (regimeState && regimeState.current_label) {
+      regimePill.className = "regime-pill " + regimeClass(regimeState.current_label);
+      regimeLabelEl.textContent = regimeState.current_label + " regime";
+      regimePill.classList.remove("hidden");
+    } else {
+      regimePill.classList.add("hidden");
+    }
+
+    groundingBanner.classList.toggle("hidden", !(body.grounding_warnings && body.grounding_warnings.length > 0));
+    narrationText.textContent = body.narration;
+
+    if (body.suggestion) {
+      suggestionBtn.textContent = "→ " + body.suggestion;
+      suggestionBtn.classList.remove("hidden");
+    } else {
+      suggestionBtn.classList.add("hidden");
+    }
+
+    lastResultId = body.result_id || null;
+    lastExperimentType = body.experiment && body.experiment.type;
+    downloadBtn.classList.toggle("hidden", !lastResultId);
+
+    traceJson.textContent = JSON.stringify(body.trace, null, 2);
+  }
+
+  suggestionBtn.addEventListener("click", function () {
+    const text = suggestionBtn.textContent.replace(/^→\s*/, "");
+    messageInput.value = text;
+    sendMessage(text);
+  });
+
+  downloadBtn.addEventListener("click", async function () {
+    if (!lastResultId) return;
+    downloadBtn.disabled = true;
+    try {
+      const response = await fetch("/report/" + lastResultId);
+      if (!response.ok) throw new Error("download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "drift-report-" + (lastExperimentType || "report") + "-" + timestamp + ".pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showOutputError("Could not download the report -- please try again.");
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  });
+
+  copyTraceBtn.addEventListener("click", function () {
+    navigator.clipboard.writeText(traceJson.textContent).then(function () {
+      copyTraceBtn.textContent = "Copied!";
+      setTimeout(function () { copyTraceBtn.textContent = "Copy to clipboard"; }, 1200);
+    });
+  });
+
+  // -- sending a message -----------------------------------------------
+  function setLoading(loading) {
+    requestInFlight = loading;
+    sendBtn.disabled = loading;
+    sendBtn.textContent = loading ? "Analysing..." : "Send";
+    setScenarioButtonsDisabled(loading);
+  }
+
+  async function sendMessage(message) {
+    if (requestInFlight) return;
+    if (!message) return;
+
+    const portfolio = readPortfolio();
+    const weightsErr = checkWeightsSumToOne(portfolio);
+    if (weightsErr) {
+      showPortfolioError(weightsErr);
+      return;
+    }
+    showPortfolioError(null);
+
+    setLoading(true);
+    showThinking();
+
+    try {
+      const response = await fetch("/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          portfolio: portfolio,
+          message: message,
+          conversation_history: conversationHistory,
+        }),
+      });
+
+      const body = await response.json().catch(function () { return {}; });
+
+      if (response.status === 422) {
+        showOutputError(body.error || "Could not understand that request.");
+        return;
+      }
+      if (response.status === 400) {
+        showPortfolioError(body.error || "Invalid portfolio.");
+        showOutputError("Fix the portfolio (see the note below the portfolio builder) and try again.");
+        return;
+      }
+      if (response.status >= 500) {
+        showOutputError("Something went wrong -- please try again.");
+        return;
+      }
+      if (!response.ok) {
+        showOutputError(body.error || "Request failed.");
+        return;
+      }
+
+      conversationHistory.push({ role: "user", content: message });
+      if (body.assistant_turn) conversationHistory.push(body.assistant_turn);
+      renderBubbles();
+
+      showResult(body);
+      messageInput.value = "";
+    } catch (e) {
+      showOutputError("Something went wrong -- please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  sendBtn.addEventListener("click", function () {
+    const text = messageInput.value.trim();
+    if (!text) return;
+    sendMessage(text);
+  });
+
+  messageInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const text = messageInput.value.trim();
+      if (text) sendMessage(text);
+    }
+  });
+
+  renderBubbles();
+})();
+</script>
+</body>
+</html>

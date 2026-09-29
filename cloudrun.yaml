@@ -1,0 +1,47 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: drift-risk-copilot
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "3"
+    spec:
+      containerConcurrency: 80
+      # 60s (the checkpoint spec's original value, sized for the compute
+      # step alone) is too short in practice: /ask can chain up to 4
+      # sequential Gemini round trips -- parse, then narrate, then up to 2
+      # grounding-retry narrate calls, each of which itself retries up to
+      # 3x internally on 429/503 -- confirmed live, a real /ask request hit
+      # Cloud Run's own gateway timeout at exactly 60.1s ("upstream request
+      # timeout"). 300s gives that chain real headroom without being
+      # unbounded.
+      timeoutSeconds: 300
+      containers:
+        - image: gcr.io/PROJECT_ID/drift-risk-copilot:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: "1"
+          env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: drift-gemini-key
+                  key: latest
+            # /data is the container's own ephemeral local disk: it survives
+            # requests on a single warm instance but is never shared across
+            # instances/revisions and is lost on cold start or scale-to-zero
+            # (minScale: "0" above). Acceptable for a hackathon-scale demo;
+            # see the README's "Persistence" section for the tradeoff.
+            - name: SNAPSHOT_DB_PATH
+              value: /data/snapshots.db
+  traffic:
+    - latestRevision: true
+      percent: 100

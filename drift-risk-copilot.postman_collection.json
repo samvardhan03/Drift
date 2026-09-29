@@ -1,0 +1,2405 @@
+{
+  "info": {
+    "_postman_id": "b8a1f6b2-3c1e-4b7a-9f3e-6a2f1c9d7e21",
+    "name": "drift-risk-copilot",
+    "description": "Full API surface for drift-risk-copilot (AI Builder Cup 2026): /health, /experiment (direct), /ask (NL via Gemini), /scenarios, /report/{id} (PDF), multi-turn conversation, regime-conditional experiments, validation errors, and edge cases. All bodies/assertions use the field names actually returned by the service, not assumed names -- see the checkpoint reports for the lists of mismatches found while building/extending this.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://drift-risk-copilot-99506253437.asia-south1.run.app",
+      "type": "string"
+    },
+    {
+      "key": "portfolio",
+      "value": "{\"holdings\":[{\"ticker\":\"RELIANCE.NS\",\"weight\":0.15},{\"ticker\":\"HDFCBANK.NS\",\"weight\":0.13},{\"ticker\":\"ICICIBANK.NS\",\"weight\":0.12},{\"ticker\":\"INFY.NS\",\"weight\":0.10},{\"ticker\":\"TCS.NS\",\"weight\":0.10},{\"ticker\":\"LT.NS\",\"weight\":0.09},{\"ticker\":\"ITC.NS\",\"weight\":0.09},{\"ticker\":\"KOTAKBANK.NS\",\"weight\":0.08},{\"ticker\":\"BHARTIARTL.NS\",\"weight\":0.08},{\"ticker\":\"TMPV.NS\",\"weight\":0.06}],\"total_value_inr\":10000000.0}",
+      "type": "string",
+      "description": "10-stock Nifty portfolio, Rs 1 crore, weights sum to exactly 1.0. Embedded as a JSON-object-valued string variable so {{portfolio}} expands inline into request bodies below."
+    },
+    {
+      "key": "last_result_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by \"PDF Report\" step 1's post-response script from POST /ask's result_id; consumed by step 2's GET /report/{{last_result_id}}."
+    },
+    {
+      "key": "turn1_assistant_turn",
+      "value": "",
+      "type": "string",
+      "description": "Set by \"Multi-turn\" request 1's post-response script (JSON.stringify of assistant_turn); consumed by request 2's pre-request script to build conversation_history."
+    },
+    {
+      "key": "computed_portfolio_hash",
+      "value": "",
+      "type": "string",
+      "description": "Set by \"12. Risk Drift\"'s GET /drift pre-request script -- reproduces compute::portfolio::portfolio_hash in JS from {{portfolio}}, since no endpoint returns this hash directly."
+    },
+    {
+      "key": "last_execution_trace_id",
+      "value": "",
+      "type": "string",
+      "description": "Set by \"17. Multi-tool Ask\"'s post-response script from POST /ask's agent_execution_trace.id; consumed by \"18. Execution Trace\"'s GET /execution-trace/{{last_execution_trace_id}}."
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body.status === \"ok\"', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.status).to.eql('ok');",
+                  "});",
+                  "pm.test('body.version === \"0.1.0\"', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.version).to.eql('0.1.0');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Experiment - direct",
+      "item": [
+        {
+          "name": "a. FactorShock - Nifty -12% Brent +20%",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\"MARKET\": -12.0, \"BRENT\": 20.0},\n    \"propagate\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: the checkpoint brief assumed the body field is \"shocks\" and the",
+                  "// values are decimal fractions (-0.12). The deployed API's real field is",
+                  "// \"shocks_pct\", taking simple PERCENT values (-12.0 for -12%) -- see",
+                  "// compute::experiments::FactorShockInput.shocks_pct.",
+                  "//",
+                  "// The brief also assumed portfolio_pnl_inr/implied_shocks live at the top",
+                  "// of `outputs`. The real trace wraps FactorShock's payload one level",
+                  "// deeper, at outputs.result (with an outputs.note string alongside it).",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result.portfolio_pnl_inr present and < 0', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.portfolio_pnl_inr).to.exist;",
+                  "    pm.expect(out.portfolio_pnl_inr).to.be.below(0);",
+                  "});",
+                  "pm.test('outputs.result.implied_shocks.USDINR present', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.implied_shocks).to.have.property('USDINR');",
+                  "});",
+                  "pm.test('both invariants passed', () => {",
+                  "    const invariants = pm.response.json().invariants;",
+                  "    pm.expect(invariants.every(i => i.passed)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. RiskDecomposition",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: brief assumed \"portfolio_vol_annualised\" (British spelling) and",
+                  "// per-check boolean fields \"euler_stock_sum_check\"/\"euler_factor_sum_check\".",
+                  "// The real field is \"portfolio_vol_annualized\" (American spelling). All three",
+                  "// experiments now nest their payload at outputs.result (RiskDecomposition used",
+                  "// to be flat at outputs.* -- fixed for consistency with FactorShock/CvarRebalance).",
+                  "// The Euler-sum checks are plain entries in the top-level `invariants` array,",
+                  "// not named boolean fields; matched here by their actual invariant `name` text.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result.portfolio_vol_annualized present and > 0', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.portfolio_vol_annualized).to.exist;",
+                  "    pm.expect(out.portfolio_vol_annualized).to.be.above(0);",
+                  "});",
+                  "pm.test('by-stock Euler sum invariant passed', () => {",
+                  "    const invariants = pm.response.json().invariants;",
+                  "    const inv = invariants.find(i => i.name.includes('by_stock.contribution'));",
+                  "    pm.expect(inv, 'invariant not found').to.exist;",
+                  "    pm.expect(inv.passed).to.be.true;",
+                  "});",
+                  "pm.test('by-factor Euler sum invariant passed', () => {",
+                  "    const invariants = pm.response.json().invariants;",
+                  "    const inv = invariants.find(i => i.name.includes('by_factor.contribution'));",
+                  "    pm.expect(inv, 'invariant not found').to.exist;",
+                  "    pm.expect(inv.passed).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. CvarRebalance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"CvarRebalance\",\n    \"confidence_level\": 0.95,\n    \"per_name_cap\": 0.20,\n    \"turnover_limit\": 0.30,\n    \"commission_bps\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: brief assumed the input field is \"confidence\" -- the real field is",
+                  "// \"confidence_level\" (compute::cvar::CvarRebalanceInput.confidence_level).",
+                  "// Also wrapped at outputs.result like FactorShock. The named boolean checks",
+                  "// \"lp_objective_matches_cvar_check\"/\"weights_sum_check\" don't exist as fields;",
+                  "// they're entries in `invariants`, matched here by their real name text.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('stats_after.historical_cvar < stats_before.historical_cvar', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.stats_after.historical_cvar).to.be.below(out.stats_before.historical_cvar);",
+                  "});",
+                  "pm.test('LP objective matches directly-computed CVaR', () => {",
+                  "    const invariants = pm.response.json().invariants;",
+                  "    const inv = invariants.find(i => i.name.includes('LP objective'));",
+                  "    pm.expect(inv, 'invariant not found').to.exist;",
+                  "    pm.expect(inv.passed).to.be.true;",
+                  "});",
+                  "pm.test('weights sum to 1', () => {",
+                  "    const invariants = pm.response.json().invariants;",
+                  "    const inv = invariants.find(i => i.name.includes('sum(weights_after)'));",
+                  "    pm.expect(inv, 'invariant not found').to.exist;",
+                  "    pm.expect(inv.passed).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d. FactorShock - all 5 factors given, propagate true",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\n      \"MARKET\": -5.0,\n      \"USDINR\": 2.0,\n      \"BRENT\": 10.0,\n      \"GOLD_USD\": -3.0,\n      \"RATES_PROXY\": 1.0\n    },\n    \"propagate\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: the brief's GOLD factor is named GOLD_USD in the real API (renamed",
+                  "// in a later checkpoint to make clear it's USD-denominated gold).",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('conditional propagation is a no-op when all 5 factors are given', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(Object.keys(out.implied_shocks).length).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e. CvarRebalance - tau = 0",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"CvarRebalance\",\n    \"confidence_level\": 0.95,\n    \"per_name_cap\": 0.20,\n    \"turnover_limit\": 0.0,\n    \"commission_bps\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: brief assumed \"before_weights\"/\"after_weights\" -- the real fields",
+                  "// are \"weights_before\"/\"weights_after\" (compute::cvar::CvarRebalanceOutput).",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('every weight unchanged within 0.001 (tau=0)', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    for (const ticker of Object.keys(out.weights_before)) {",
+                  "        const before = out.weights_before[ticker];",
+                  "        const after = out.weights_after[ticker];",
+                  "        pm.expect(Math.abs(after - before), `${ticker}: ${after} vs ${before}`).to.be.below(0.001);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Ask - natural language",
+      "item": [
+        {
+          "name": "a. What happens to my portfolio if Nifty crashes 15%?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"What happens to my portfolio if Nifty crashes 15%?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('experiment.type === \"FactorShock\"', () => {",
+                  "    pm.expect(pm.response.json().experiment.type).to.eql('FactorShock');",
+                  "});",
+                  "pm.test('narration is a non-empty string', () => {",
+                  "    const n = pm.response.json().narration;",
+                  "    pm.expect(n).to.be.a('string');",
+                  "    pm.expect(n.length).to.be.above(0);",
+                  "});",
+                  "pm.test('grounding_warnings is an empty array', () => {",
+                  "    pm.expect(pm.response.json().grounding_warnings).to.eql([]);",
+                  "});",
+                  "pm.test('result_id is a non-empty string (UUID)', () => {",
+                  "    const id = pm.response.json().result_id;",
+                  "    pm.expect(id).to.be.a('string');",
+                  "    pm.expect(id.length).to.be.above(0);",
+                  "});",
+                  "pm.test('assistant_turn.role === \"assistant\"', () => {",
+                  "    pm.expect(pm.response.json().assistant_turn.role).to.eql('assistant');",
+                  "});",
+                  "pm.test('assistant_turn.content is a non-empty string', () => {",
+                  "    const c = pm.response.json().assistant_turn.content;",
+                  "    pm.expect(c).to.be.a('string');",
+                  "    pm.expect(c.length).to.be.above(0);",
+                  "});",
+                  "pm.test('suggestion is a non-empty string', () => {",
+                  "    const s = pm.response.json().suggestion;",
+                  "    pm.expect(s).to.be.a('string');",
+                  "    pm.expect(s.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Where is my risk concentrated?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"Where is my risk concentrated?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('experiment.type === \"RiskDecomposition\"', () => {",
+                  "    pm.expect(pm.response.json().experiment.type).to.eql('RiskDecomposition');",
+                  "});",
+                  "pm.test('narration is a non-empty string', () => {",
+                  "    const n = pm.response.json().narration;",
+                  "    pm.expect(n).to.be.a('string');",
+                  "    pm.expect(n.length).to.be.above(0);",
+                  "});",
+                  "pm.test('result_id is a non-empty string (UUID)', () => {",
+                  "    const id = pm.response.json().result_id;",
+                  "    pm.expect(id).to.be.a('string');",
+                  "    pm.expect(id.length).to.be.above(0);",
+                  "});",
+                  "pm.test('assistant_turn.role === \"assistant\"', () => {",
+                  "    pm.expect(pm.response.json().assistant_turn.role).to.eql('assistant');",
+                  "});",
+                  "pm.test('assistant_turn.content is a non-empty string', () => {",
+                  "    const c = pm.response.json().assistant_turn.content;",
+                  "    pm.expect(c).to.be.a('string');",
+                  "    pm.expect(c.length).to.be.above(0);",
+                  "});",
+                  "pm.test('suggestion is a non-empty string', () => {",
+                  "    const s = pm.response.json().suggestion;",
+                  "    pm.expect(s).to.be.a('string');",
+                  "    pm.expect(s.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. Reduce my tail risk, I can tolerate 25% turnover.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"Reduce my tail risk, I can tolerate 25% turnover.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('experiment.type === \"CvarRebalance\"', () => {",
+                  "    pm.expect(pm.response.json().experiment.type).to.eql('CvarRebalance');",
+                  "});",
+                  "pm.test('narration is a non-empty string', () => {",
+                  "    const n = pm.response.json().narration;",
+                  "    pm.expect(n).to.be.a('string');",
+                  "    pm.expect(n.length).to.be.above(0);",
+                  "});",
+                  "pm.test('result_id is a non-empty string (UUID)', () => {",
+                  "    const id = pm.response.json().result_id;",
+                  "    pm.expect(id).to.be.a('string');",
+                  "    pm.expect(id.length).to.be.above(0);",
+                  "});",
+                  "pm.test('assistant_turn.role === \"assistant\"', () => {",
+                  "    pm.expect(pm.response.json().assistant_turn.role).to.eql('assistant');",
+                  "});",
+                  "pm.test('assistant_turn.content is a non-empty string', () => {",
+                  "    const c = pm.response.json().assistant_turn.content;",
+                  "    pm.expect(c).to.be.a('string');",
+                  "    pm.expect(c.length).to.be.above(0);",
+                  "});",
+                  "pm.test('suggestion is a non-empty string', () => {",
+                  "    const s = pm.response.json().suggestion;",
+                  "    pm.expect(s).to.be.a('string');",
+                  "    pm.expect(s.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d. What is the weather like in Mumbai today?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"What is the weather like in Mumbai today?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('body.code present', () => {",
+                  "    pm.expect(pm.response.json().code).to.exist;",
+                  "});",
+                  "pm.test('body.error is a non-empty string', () => {",
+                  "    const e = pm.response.json().error;",
+                  "    pm.expect(e).to.be.a('string');",
+                  "    pm.expect(e.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Validation errors",
+      "item": [
+        {
+          "name": "a. Weights sum to 1.2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {\n    \"holdings\": [\n      {\"ticker\": \"RELIANCE.NS\", \"weight\": 0.18},\n      {\"ticker\": \"HDFCBANK.NS\", \"weight\": 0.156},\n      {\"ticker\": \"ICICIBANK.NS\", \"weight\": 0.144},\n      {\"ticker\": \"INFY.NS\", \"weight\": 0.12},\n      {\"ticker\": \"TCS.NS\", \"weight\": 0.12},\n      {\"ticker\": \"LT.NS\", \"weight\": 0.108},\n      {\"ticker\": \"ITC.NS\", \"weight\": 0.108},\n      {\"ticker\": \"KOTAKBANK.NS\", \"weight\": 0.096},\n      {\"ticker\": \"BHARTIARTL.NS\", \"weight\": 0.096},\n      {\"ticker\": \"TMPV.NS\", \"weight\": 0.072}\n    ],\n    \"total_value_inr\": 10000000.0\n  },\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('body.code === \"invalid_portfolio\"', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('invalid_portfolio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Single holding only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {\n    \"holdings\": [\n      {\"ticker\": \"RELIANCE.NS\", \"weight\": 1.0}\n    ],\n    \"total_value_inr\": 1000000.0\n  },\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('body.code === \"invalid_portfolio\"', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('invalid_portfolio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. Negative total_value_inr",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {\n    \"holdings\": [\n      {\"ticker\": \"RELIANCE.NS\", \"weight\": 0.6},\n      {\"ticker\": \"TCS.NS\", \"weight\": 0.4}\n    ],\n    \"total_value_inr\": -50000\n  },\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('body.code === \"invalid_portfolio\"', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('invalid_portfolio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d. Missing experiment field entirely",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: this lands on the AppJson extractor's rejection path (missing",
+                  "// required field), which returns 400 with code \"invalid_json\" -- not the",
+                  "// portfolio-validation path (\"invalid_portfolio\"), since the body never",
+                  "// deserializes far enough to reach that check. Both 400 and 422 are valid",
+                  "// per the brief.",
+                  "pm.test('status is 422 or 400', () => {",
+                  "    pm.expect([400, 422]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e. CvarRebalance via /ask with no per_name_cap mentioned",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"Reduce my tail risk, I can tolerate 20% turnover.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Not actually an error response (200) -- placed in this folder per the",
+                  "// checkpoint brief, which groups it with cap-related validation behavior:",
+                  "// the message never mentions a per-name cap, so the parser (per",
+                  "// agent::parse::PARSE_SYSTEM_PROMPT) should omit per_name_cap entirely,",
+                  "// and compute::cvar::run_cvar_rebalance should default it to 0.20 and",
+                  "// record that in trace.model_params.cap_source.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('experiment.type === \"CvarRebalance\"', () => {",
+                  "    pm.expect(pm.response.json().experiment.type).to.eql('CvarRebalance');",
+                  "});",
+                  "pm.test('trace.model_params.cap_source === \"server-default-0.20\"', () => {",
+                  "    pm.expect(pm.response.json().trace.model_params.cap_source).to.eql('server-default-0.20');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Edge cases",
+      "item": [
+        {
+          "name": "a. FactorShock with propagate: false",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\"MARKET\": -12.0},\n    \"propagate\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('implied_shocks is empty (propagate: false)', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(Object.keys(out.implied_shocks).length).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. CvarRebalance with confidence 0.99",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"CvarRebalance\",\n    \"confidence_level\": 0.99,\n    \"per_name_cap\": 0.20,\n    \"turnover_limit\": 0.30,\n    \"commission_bps\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('trace records a smaller tail_scenario_count at higher confidence', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    console.log('tail_scenario_count at 0.99:', out.tail_scenario_count, '/', out.scenario_count);",
+                  "    pm.expect(out.tail_scenario_count).to.be.a('number');",
+                  "    pm.expect(out.tail_scenario_count).to.be.below(out.scenario_count);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Scenarios",
+      "item": [
+        {
+          "name": "GET /scenarios",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/scenarios",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "scenarios"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response is an array of length 3', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.be.an('array');",
+                  "    pm.expect(body.length).to.eql(3);",
+                  "});",
+                  "pm.test('each item has id, name, shocks_pct, propagate', () => {",
+                  "    const body = pm.response.json();",
+                  "    for (const scenario of body) {",
+                  "        pm.expect(scenario).to.have.property('id');",
+                  "        pm.expect(scenario).to.have.property('name');",
+                  "        pm.expect(scenario).to.have.property('shocks_pct');",
+                  "        pm.expect(scenario).to.have.property('propagate');",
+                  "    }",
+                  "});",
+                  "pm.test('ids are exactly covid_crash, ilfs_contagion, taper_tantrum_2013', () => {",
+                  "    const ids = pm.response.json().map(s => s.id).sort();",
+                  "    pm.expect(ids).to.eql(['covid_crash', 'ilfs_contagion', 'taper_tantrum_2013']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. PDF Report",
+      "item": [
+        {
+          "name": "a. POST /ask (stores last_result_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"Where is my risk concentrated?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('result_id is a non-empty string', () => {",
+                  "    pm.expect(body.result_id).to.be.a('string');",
+                  "    pm.expect(body.result_id.length).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('last_result_id', body.result_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. GET /report/{{last_result_id}}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/report/{{last_result_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "report",
+                "{{last_result_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type contains application/pdf', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+                  "});",
+                  "pm.test('response body is non-empty (binary, not JSON)', () => {",
+                  "    pm.expect(pm.response.size().body).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. GET /report/{unknown id} -> 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/report/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "report",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Multi-turn",
+      "item": [
+        {
+          "name": "a. Turn 1 - Where is my risk concentrated?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"Where is my risk concentrated?\",\n  \"conversation_history\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('experiment.type === \"RiskDecomposition\"', () => {",
+                  "    pm.expect(body.experiment.type).to.eql('RiskDecomposition');",
+                  "});",
+                  "pm.collectionVariables.set('turn1_assistant_turn', JSON.stringify(body.assistant_turn));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Turn 2 - Now reduce my tail risk, allow up to 20% turnover.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const turn1 = JSON.parse(pm.collectionVariables.get('turn1_assistant_turn'));",
+                  "const body = {",
+                  "    portfolio: JSON.parse(pm.collectionVariables.get('portfolio')),",
+                  "    message: 'Now reduce my tail risk, allow up to 20% turnover.',",
+                  "    conversation_history: [",
+                  "        { role: 'user', content: 'Where is my risk concentrated?' },",
+                  "        turn1",
+                  "    ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('experiment.type === \"CvarRebalance\"', () => {",
+                  "    pm.expect(body.experiment.type).to.eql('CvarRebalance');",
+                  "});",
+                  "pm.test('turnover_limit close to 0.20 (within 0.05)', () => {",
+                  "    pm.expect(Math.abs(body.experiment.turnover_limit - 0.20)).to.be.below(0.05);",
+                  "});",
+                  "pm.test('trace.model_params.cap_source is present', () => {",
+                  "    pm.expect(body.trace.model_params.cap_source).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. Regime",
+      "item": [
+        {
+          "name": "a. RiskDecomposition (regime is always-on)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NOTE: the checkpoint brief wrote these assertions as \"trace.model_params...\",",
+                  "// but POST /experiment's response body IS the EvidenceTrace itself (no \"trace\"",
+                  "// wrapper key) -- that wrapper only exists on POST /ask's response. Paths below",
+                  "// are corrected to match the real (flat) /experiment response shape.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('model_params.regime_state.current_label is Bull/Bear/Crisis', () => {",
+                  "    const label = pm.response.json().model_params.regime_state.current_label;",
+                  "    pm.expect(['Bull', 'Bear', 'Crisis']).to.include(label);",
+                  "});",
+                  "pm.test('outputs.result.portfolio_vol_annualized present and > 0', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.portfolio_vol_annualized).to.exist;",
+                  "    pm.expect(out.portfolio_vol_annualized).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. FactorShock (regime is always-on), Nifty -12% Brent +20%",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\"MARKET\": -12.0, \"BRENT\": 20.0},\n    \"propagate\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same flat-response-shape note as \"9a\" above: model_params/outputs are",
+                  "// top-level on POST /experiment's response, not under a \"trace\" key.",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('model_params.regime_state present', () => {",
+                  "    pm.expect(pm.response.json().model_params.regime_state).to.exist;",
+                  "});",
+                  "pm.test('crisis_comparison P&L differs from primary P&L when present', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    if (out.crisis_comparison) {",
+                  "        pm.expect(out.crisis_comparison.portfolio_pnl_inr).to.not.eql(out.portfolio_pnl_inr);",
+                  "    } else {",
+                  "        pm.expect(out.crisis_comparison).to.be.null;",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Historical Scenarios",
+      "item": [
+        {
+          "name": "a. covid_crash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\n      \"MARKET\": -38.0,\n      \"BRENT\": -55.0,\n      \"USDINR\": 8.5,\n      \"GOLD_USD\": 3.0,\n      \"RATES_PROXY\": -6.0\n    },\n    \"propagate\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('portfolio_pnl_inr < 0', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.portfolio_pnl_inr).to.be.below(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. ilfs_contagion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\n      \"MARKET\": -15.0,\n      \"USDINR\": 7.0,\n      \"BRENT\": 15.0,\n      \"GOLD_USD\": 2.5,\n      \"RATES_PROXY\": 4.0\n    },\n    \"propagate\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('portfolio_pnl_inr < 0', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.portfolio_pnl_inr).to.be.below(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. taper_tantrum_2013",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"FactorShock\",\n    \"shocks_pct\": {\n      \"MARKET\": -12.0,\n      \"USDINR\": 18.0,\n      \"GOLD_USD\": -18.0,\n      \"BRENT\": -5.0,\n      \"RATES_PROXY\": 5.0\n    },\n    \"propagate\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('portfolio_pnl_inr < 0', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.portfolio_pnl_inr).to.be.below(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Portfolio Performance",
+      "item": [
+        {
+          "name": "a. POST /experiment - direct",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"PortfolioPerformance\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result has total_return and max_drawdown', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.total_return).to.be.a('number');",
+                  "    pm.expect(out.max_drawdown).to.be.a('number');",
+                  "    pm.expect(out.max_drawdown).to.be.at.most(0);",
+                  "});",
+                  "pm.test('end_value invariant passed', () => {",
+                  "    const inv = pm.response.json().invariants.find(i => i.name.includes('end_value_inr'));",
+                  "    pm.expect(inv, 'invariant not found').to.exist;",
+                  "    pm.expect(inv.passed).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. POST /ask - How has my portfolio performed lately?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"How is my portfolio performing recently in terms of market trends?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression test: this exact style of question (asking about realized",
+                  "// portfolio performance/returns, not a hypothetical shock, current risk,",
+                  "// or a rebalance) used to return 422 unrecognised_request, because no",
+                  "// experiment computed historical returns at all. Fixed by adding a fourth",
+                  "// experiment, PortfolioPerformance.",
+                  "pm.test('status 200 (not 422)', () => pm.response.to.have.status(200));",
+                  "pm.test('experiment.type === \"PortfolioPerformance\"', () => {",
+                  "    pm.expect(pm.response.json().experiment.type).to.eql('PortfolioPerformance');",
+                  "});",
+                  "pm.test('narration is a non-empty string', () => {",
+                  "    const n = pm.response.json().narration;",
+                  "    pm.expect(n).to.be.a('string');",
+                  "    pm.expect(n.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12. Risk Drift",
+      "item": [
+        {
+          "name": "a. (setup) RiskDecomposition baseline",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Ensures the immediately-following RiskDrift request has a fresh",
+                  "// RiskDecomposition snapshot as its baseline -- RiskDrift with no",
+                  "// explicit baseline_snapshot_id resolves against the *most recent*",
+                  "// snapshot for this portfolio hash, which must itself be a",
+                  "// RiskDecomposition result (see compute::drift::resolve_baseline).",
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. RiskDrift vs the baseline above",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDrift\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result.vol_before present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.vol_before).to.be.a('number');",
+                  "});",
+                  "pm.test('outputs.result.regime_before is Bull/Bear/Crisis', () => {",
+                  "    pm.expect(['Bull', 'Bear', 'Crisis']).to.include(pm.response.json().outputs.result.regime_before);",
+                  "});",
+                  "pm.test('outputs.result.days_elapsed present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.days_elapsed).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c. GET /drift",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/drift?portfolio={{computed_portfolio_hash}}&limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "drift"
+              ],
+              "query": [
+                {
+                  "key": "portfolio",
+                  "value": "{{computed_portfolio_hash}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reproduces compute::portfolio::portfolio_hash in JS: SHA-256 of",
+                  "// \"TICKER:weight,...\" pairs, tickers sorted ascending -- no endpoint",
+                  "// returns this hash directly, so it's recomputed here from {{portfolio}}.",
+                  "const portfolio = JSON.parse(pm.collectionVariables.get('portfolio'));",
+                  "const holdings = portfolio.holdings.slice().sort((a, b) => (a.ticker < b.ticker ? -1 : 1));",
+                  "const joined = holdings.map((h) => `${h.ticker}:${h.weight}`).join(',');",
+                  "const hash = CryptoJS.SHA256(joined).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('computed_portfolio_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response.snapshots is an array', () => {",
+                  "    pm.expect(pm.response.json().snapshots).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "13. Reverse Stress",
+      "item": [
+        {
+          "name": "a. Breach a 5L threshold",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"ReverseStress\",\n    \"loss_threshold_inr\": 500000\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result.mahalanobis_severity present and > 0', () => {",
+                  "    const out = pm.response.json().outputs.result;",
+                  "    pm.expect(out.mahalanobis_severity).to.be.a('number');",
+                  "    pm.expect(out.mahalanobis_severity).to.be.above(0);",
+                  "});",
+                  "pm.test('outputs.result.severity_label present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.severity_label).to.be.a('string');",
+                  "});",
+                  "pm.test('outputs.result.portfolio_pnl_inr < 0', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.portfolio_pnl_inr).to.be.below(0);",
+                  "});",
+                  "pm.test('outputs.result.solver_status present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.solver_status).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Infeasible threshold",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"ReverseStress\",\n    \"loss_threshold_inr\": 999999999\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('body.error contains \"cannot be breached\"', () => {",
+                  "    pm.expect(pm.response.json().error).to.include('cannot be breached');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "14. Policy Check",
+      "item": [
+        {
+          "name": "a. Tight vol limit (breach)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"PolicyCheck\",\n    \"policy\": {\n      \"max_vol_annualized\": 0.01\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('policy_result.all_passed === false', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.policy_result.all_passed).to.eql(false);",
+                  "});",
+                  "pm.test('policy_result.breach_count >= 1', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.policy_result.breach_count).to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Loose vol limit (all pass)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"PolicyCheck\",\n    \"policy\": {\n      \"max_vol_annualized\": 1.0\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('policy_result.all_passed === true', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.policy_result.all_passed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "15. Portfolio Performance (per-holding + _pct fields)",
+      "item": [
+        {
+          "name": "a. POST /experiment - per-holding breakdown",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"PortfolioPerformance\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('outputs.result.total_return_pct present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.total_return_pct).to.be.a('number');",
+                  "});",
+                  "pm.test('outputs.result.best_performer present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.best_performer).to.be.a('string');",
+                  "});",
+                  "pm.test('outputs.result.worst_performer present', () => {",
+                  "    pm.expect(pm.response.json().outputs.result.worst_performer).to.be.a('string');",
+                  "});",
+                  "pm.test('outputs.result.holding_returns is an object with at least 1 key', () => {",
+                  "    const hr = pm.response.json().outputs.result.holding_returns;",
+                  "    pm.expect(hr).to.be.an('object');",
+                  "    pm.expect(Object.keys(hr).length).to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16. Portfolio Upload",
+      "item": [
+        {
+          "name": "a. Weight-based CSV",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "postman/fixtures/sample_portfolio.csv"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/portfolio/upload",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "portfolio",
+                "upload"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response.portfolio.holdings has 2 items', () => {",
+                  "    pm.expect(pm.response.json().portfolio.holdings).to.have.lengthOf(2);",
+                  "});",
+                  "pm.test('response.layout_detected === \"weight\"', () => {",
+                  "    pm.expect(pm.response.json().layout_detected).to.eql('weight');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. Invalid file type (.txt)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "postman/fixtures/invalid_upload.txt"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/portfolio/upload",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "portfolio",
+                "upload"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "17. Multi-tool Ask",
+      "item": [
+        {
+          "name": "a. What is my risk and how has it changed since my last check?",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/ask",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ask"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"message\": \"What is my risk and how has it changed since my last check?\",\n  \"conversation_history\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('tool_plans is an array with length >= 2', () => {",
+                  "    pm.expect(body.agent_execution_trace.tool_plans).to.be.an('array');",
+                  "    pm.expect(body.agent_execution_trace.tool_plans.length).to.be.at.least(2);",
+                  "});",
+                  "pm.test('tool_plans[0].tool === \"current_risk\"', () => {",
+                  "    pm.expect(body.agent_execution_trace.tool_plans[0].tool).to.eql('current_risk');",
+                  "});",
+                  "pm.test('tool_plans[1].tool === \"risk_drift\"', () => {",
+                  "    pm.expect(body.agent_execution_trace.tool_plans[1].tool).to.eql('risk_drift');",
+                  "});",
+                  "pm.test('narration non-empty', () => {",
+                  "    pm.expect(body.narration).to.be.a('string');",
+                  "    pm.expect(body.narration.length).to.be.above(0);",
+                  "});",
+                  "pm.test('agent_execution_trace.gemini_calls === 3', () => {",
+                  "    pm.expect(body.agent_execution_trace.gemini_calls).to.be.at.least(3);",
+                  "});",
+                  "pm.collectionVariables.set('last_execution_trace_id', body.agent_execution_trace.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "18. Execution Trace",
+      "item": [
+        {
+          "name": "a. GET /execution-trace/{{last_execution_trace_id}}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/execution-trace/{{last_execution_trace_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "execution-trace",
+                "{{last_execution_trace_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('response.gemini_calls present', () => {",
+                  "    pm.expect(pm.response.json().gemini_calls).to.exist;",
+                  "});",
+                  "pm.test('response.tool_plans is an array', () => {",
+                  "    pm.expect(pm.response.json().tool_plans).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b. GET /execution-trace/{unknown-id} - 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/execution-trace/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "execution-trace",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "19. EvidenceTrace v2 fields",
+      "item": [
+        {
+          "name": "a. RiskDecomposition - data_as_of and engine_commit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('data_as_of is a non-empty string', () => {",
+                  "    pm.expect(body.data_as_of).to.be.a('string');",
+                  "    pm.expect(body.data_as_of.length).to.be.above(0);",
+                  "});",
+                  "pm.test('engine_commit is a non-empty string', () => {",
+                  "    pm.expect(body.engine_commit).to.be.a('string');",
+                  "    pm.expect(body.engine_commit.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "20. Always-on regime",
+      "item": [
+        {
+          "name": "a. RiskDecomposition - regime_state non-null",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/experiment",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "experiment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"portfolio\": {{portfolio}},\n  \"experiment\": {\n    \"type\": \"RiskDecomposition\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const regime = pm.response.json().model_params.regime_state;",
+                  "pm.test('model_params.regime_state is not null', () => {",
+                  "    pm.expect(regime).to.not.be.null;",
+                  "});",
+                  "pm.test('regime_state.current_label is Bull/Bear/Crisis', () => {",
+                  "    pm.expect(['Bull', 'Bear', 'Crisis']).to.include(regime.current_label);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "21. CORS preflight",
+      "item": [
+        {
+          "name": "a. OPTIONS /health",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "https://example.com"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "GET"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Access-Control-Allow-Origin header present', () => {",
+                  "    pm.expect(pm.response.headers.has('Access-Control-Allow-Origin')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

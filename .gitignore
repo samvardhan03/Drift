@@ -1,0 +1,6 @@
+/target
+data/cache/*
+!data/cache/.gitkeep
+crates/compute/data/
+.DS_Store
+.env
