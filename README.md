@@ -5,7 +5,7 @@
 [![CI](https://github.com/samvardhan03/Drift/actions/workflows/ci.yml/badge.svg)](https://github.com/samvardhan03/Drift/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-83-green.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-136%20passing-green.svg)](#)
 
 ---
 
