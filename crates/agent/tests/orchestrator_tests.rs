@@ -143,3 +143,32 @@ async fn a_crude_spike_plan_carries_brent_plus_20_through_planning() {
     assert_eq!(plans[0].tool, "factor_shock");
     assert_eq!(plans[0].params["shocks_pct"]["BRENT"], 20.0);
 }
+
+const GREETING_REPLY: &str = "Hello! I'm your portfolio risk analyst. Ask me anything about your portfolio -- try \"What is my risk right now?\" or \"What would a market crash do to me?\"";
+
+#[test]
+fn planning_prompt_routes_greetings_to_decline_with_the_greeting_reply() {
+    use agent::orchestrator::PLANNING_SYSTEM_PROMPT as P;
+    assert!(P.contains("RULE 0 -- Greeting detection"));
+    assert!(P.contains("hi, hello, hey, good morning, good evening, namaste, hola, thanks, thank you, ok, okay, sure, got it"));
+    assert!(P.contains("Do not run any experiment for a greeting."));
+    // The reply is embedded verbatim, quotes unescaped as the model sees them.
+    assert!(P.contains(GREETING_REPLY));
+    // Greeting rule precedes every routing rule.
+    assert!(P.find("RULE 0 -- Greeting detection").unwrap() < P.find("ROUTING RULE 0").unwrap());
+}
+
+#[tokio::test]
+async fn greetings_decline_with_the_greeting_reply_and_run_no_experiment() {
+    for greeting in ["Hi", "Hello", "Namaste", "Thanks"] {
+        let plan = serde_json::json!([{"tool": "decline", "params": {}, "reason": GREETING_REPLY}]).to_string();
+        let client = MockGeminiClient::new(vec![text_response(&plan)]);
+
+        let err = plan_tools(&client, greeting, &[]).await.unwrap_err();
+
+        match err {
+            agent::orchestrator::OrchestratorError::Declined(text) => assert_eq!(text, GREETING_REPLY, "{greeting}"),
+            other => panic!("{greeting}: expected Declined, got {other:?}"),
+        }
+    }
+}
