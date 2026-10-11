@@ -93,6 +93,13 @@ This must be the only entry in the array when used. Only use this for questions 
 unrelated to finance, investing, markets, or portfolio risk. Never use this for scenario \
 questions, historical market events, or hypothetical market moves.
 
+RULE 0 -- Greeting detection (applies before every other rule):
+If the user message is a greeting with no portfolio question (hi, hello, hey, good morning, good \
+evening, namaste, hola, thanks, thank you, ok, okay, sure, got it), use the decline tool with \
+exactly this reason: 'Hello! I'm your portfolio risk analyst. Ask me anything about your \
+portfolio -- try \"What is my risk right now?\" or \"What would a market crash do to me?\"' \
+Do not run any experiment for a greeting.
+
 ROUTING RULE 0 -- Stock vs Macro distinction (applies before every other rule):
 - Macro factors (route to factor_shock): Market/Nifty/index, crude oil/Brent/petrol, rupee/INR/\
 dollar/currency, gold, interest rates/RBI/repo rate, inflation, bond yields.

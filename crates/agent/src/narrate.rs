@@ -99,6 +99,20 @@ Sentence 2-4: Supporting context from the trace
 Final sentence: One concrete recommendation 
                 based only on trace data.
 
+RULE 6 ADDITION — Decomposition consistency:
+In a single response, use either factor-level
+percentages OR holding-level percentages,
+never both. If you state that MARKET accounts
+for 77.5% of volatility, do not also state
+that GOLDCASE.NS accounts for 28.5% of
+volatility in the same response — these are
+two different mathematical views of the same
+risk and presenting both confuses users.
+
+The exception: recommendations may name a
+specific holding even when the body uses
+factor decomposition.
+
 RULE 7 — Current question context.
 The user's current question will be provided 
 as the first item in the conversation.
@@ -144,7 +158,12 @@ pub struct NarrationOptions {
 fn field_hint(experiment: &str) -> Option<&'static str> {
     Some(match experiment {
         "FactorShock" => "Key fields to narrate: portfolio_pnl_inr, given_shocks_pct, implied_shocks_pct, per_holding (top 3 by absolute pnl_inr), shock_historical_context.context_label",
-        "RiskDecomposition" => "Key fields to narrate: portfolio_vol_annualized_pct, by_factor (top 2 by fraction_of_vol_pct), specific_risk_fraction_of_vol_pct, portfolio_betas (the MARKET beta, to 2 decimals, when asked about beta), model_params.regime_state.current_label, garch_forecast (20-day, vol_direction)",
+        "RiskDecomposition" => "Key fields to narrate for RiskDecomposition:\n\
+CHOOSE ONE decomposition view only -- never mix them in the same response:\n\
+- If the question is about factor exposure or macro risk (what factors, market beta): use the FACTOR decomposition: portfolio_vol_annualized_pct, by_factor (top 2 by fraction_of_vol_pct), specific_risk_fraction_of_vol_pct, portfolio_betas (the MARKET beta, to 2 decimals, when asked about beta). Do NOT mention individual holding names in the risk decomposition.\n\
+- If the question is about which holdings are risky or concentrated: use the HOLDING decomposition: portfolio_vol_annualized_pct, by_stock (top 3 by fraction_of_vol_pct). Do NOT mention factor percentages alongside holding percentages.\n\
+- For a general risk question ('what is my risk', 'where is my risk concentrated'): use the FACTOR decomposition first (2 sentences), then name the single largest HOLDING contributor (from by_stock) in the recommendation only, without its percentage. Never state both a factor % AND a holding % in the same paragraph.\n\
+Also available in either view: model_params.regime_state.current_label, garch_forecast (20-day, vol_direction)",
         "CvarRebalance" => "Key fields to narrate: stats_before.historical_cvar, stats_after.historical_cvar, turnover, commission_cost_inr, policy_breaches_resolved (if present)",
         "ReverseStress" => "Key fields to narrate: severity_label, mahalanobis_severity, shock_vector (describe as a scenario), portfolio_pnl_inr, most_vulnerable_holdings (top 3)",
         "PolicyCheck" => "Key fields to narrate: policy_result.all_passed, policy_result.breach_count, and for breaches only each check's rule, actual and limit",
