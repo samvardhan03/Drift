@@ -70,10 +70,20 @@ fly deploy
 | `GEMINI_API_KEY` | No (AI features only) | — | Google Gemini API key |
 | `SNAPSHOT_DB_PATH` | No | `./data/snapshots.db` | SQLite path for risk snapshots |
 | `PORT` | No | `8080` | Listen port |
+| `UPSTOX_API_KEY` / `UPSTOX_API_SECRET` | No | — | Enables Upstox OAuth holdings import |
+| `UPSTOX_REDIRECT_URI` | No | `http://localhost:8080/auth/upstox/callback` | Set to `https://YOUR_HOST/auth/upstox/callback` in deployment; must match the URL registered with Upstox |
 | `RUST_LOG` | No | `info` | Log level filter |
+
+Store `GEMINI_API_KEY` and `UPSTOX_API_SECRET` in your platform's secret manager, never in the image or repository.
+
+## Scaling note
+
+Snapshots live in a per-instance SQLite file. If you run more than one instance, a trace stored by one instance isn't visible to another (`/report/:id` and `/drift` may 404). Either run a single instance or move the store to shared storage.
 
 ## Health check
 
 ```
-GET /health → 200 {"status":"ok"}
+GET /health → 200
+{"status":"ok","version":"0.1.0","gemini":"configured|not_configured",
+ "upstox":"configured|not_configured","active_requests":0,"capacity":N}
 ```

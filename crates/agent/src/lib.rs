@@ -2,6 +2,7 @@
 //! `EvidenceTrace` -> grounded plain-language narration.
 
 pub mod conversation;
+pub mod direction;
 pub mod execution_trace;
 pub mod gemini;
 pub mod grounding;

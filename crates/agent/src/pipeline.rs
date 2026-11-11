@@ -13,7 +13,11 @@ use crate::execution_trace::{AgentExecutionTrace, GroundingStatus};
 use crate::gemini::GeminiClient;
 use crate::grounding::GroundedNarration;
 use crate::narrate::NarrateError;
-use crate::orchestrator::{plan_tools, run_tool_plans, ToolPlan};
+use crate::narrate::NarrationOptions;
+use crate::orchestrator::{
+    apply_focus_holding, apply_realtime_caveat, is_sector_question, plan_tools_for, run_tool_plans,
+    ToolPlan,
+};
 use crate::suggest::suggest_follow_up;
 
 #[derive(Debug, Error)]
@@ -27,9 +31,12 @@ pub enum PipelineError {
     #[error("suggestion error: {0}")]
     Suggest(#[from] crate::suggest::SuggestError),
     /// No planned tool produced a trace (every one failed) -- there is
-    /// nothing left to narrate or persist. Carries the per-tool errors.
+    /// nothing left to narrate or persist. Carries the per-tool errors
+    /// (see `orchestrator::ToolError`) so `server::backend` can still
+    /// reclassify a single compute failure into its proper HTTP status
+    /// instead of a generic 500 -- see its `From<PipelineError>` impl.
     #[error("every planned tool failed: {0:?}")]
-    AllToolsFailed(Vec<String>),
+    AllToolsFailed(Vec<crate::orchestrator::ToolError>),
 }
 
 #[derive(Clone)]
@@ -74,14 +81,18 @@ pub async fn run<C: GeminiClient>(
     let total_started = std::time::Instant::now();
     let mut gemini_calls: u32 = 0;
 
-    let (tool_plans, planning_response_raw) =
-        plan_tools(client, user_message, conversation_history).await?;
+    let (mut tool_plans, planning_response_raw) =
+        plan_tools_for(client, user_message, conversation_history, Some(&portfolio)).await?;
+    // The planner's guess at which holding the user means (if any), pinned
+    // to a real holding or dropped.
+    let focus_holding = apply_focus_holding(&mut tool_plans, &portfolio);
+    let realtime_caveat = apply_realtime_caveat(&mut tool_plans, user_message);
     gemini_calls += 1;
 
     let portfolio_for_tools = portfolio.clone();
     let ctx_for_tools = ctx.clone();
     let tool_plans_for_compute = tool_plans.clone();
-    let (traces, tool_results) = tokio::task::spawn_blocking(move || {
+    let (traces, tool_results, tool_errors) = tokio::task::spawn_blocking(move || {
         run_tool_plans(
             &tool_plans_for_compute,
             &portfolio_for_tools,
@@ -92,8 +103,7 @@ pub async fn run<C: GeminiClient>(
     .expect("run_tool_plans task panicked");
 
     if traces.is_empty() {
-        let errors: Vec<String> = tool_results.into_iter().filter_map(|r| r.error).collect();
-        return Err(PipelineError::AllToolsFailed(errors));
+        return Err(PipelineError::AllToolsFailed(tool_errors));
     }
 
     let summary = traces
@@ -101,8 +111,23 @@ pub async fn run<C: GeminiClient>(
         .map(experiment_summary)
         .collect::<Vec<_>>()
         .join(" ");
+    let realtime_note = realtime_caveat.then(|| {
+        let as_of = traces[0].data_as_of.get(..10).unwrap_or(&traces[0].data_as_of);
+        format!("Note: I use historical daily data up to {as_of}. I don't have today's intraday prices.")
+    });
+    let narration_options = NarrationOptions {
+        focus_holding,
+        user_question: Some(user_message.to_string()),
+        realtime_note,
+        sector_question: is_sector_question(&tool_plans),
+    };
     let (narration_result, suggestion_result) = tokio::join!(
-        crate::grounding::grounded_narrate_many(client, &traces, conversation_history),
+        crate::grounding::grounded_narrate_many_with(
+            client,
+            &traces,
+            conversation_history,
+            &narration_options,
+        ),
         suggest_follow_up(client, &summary),
     );
     let (narration, narration_retries) = narration_result?;
@@ -115,6 +140,8 @@ pub async fn run<C: GeminiClient>(
         passed: narration.grounding_warnings.is_empty(),
         warnings: narration.grounding_warnings.clone(),
         retry_count: narration_retries,
+        directional_checks: narration.directional_checks.clone(),
+        directional_warnings: narration.directional_warnings.clone(),
     };
     let execution_trace = AgentExecutionTrace {
         id: compute::trace::new_trace_id(),

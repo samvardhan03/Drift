@@ -111,3 +111,48 @@ fn suggestions_are_under_15_words_and_are_not_phrased_as_a_question() {
         );
     }
 }
+
+// --- Decomposition consistency (factor vs holding views) ---
+
+/// True when a paragraph states both a factor-level percentage
+/// (MARKET/GOLD_USD/... share of vol) and a holding-level percentage
+/// (a `.NS` ticker's share of vol).
+fn mixes_factor_and_holding_percentages(paragraph: &str) -> bool {
+    const FACTORS: [&str; 5] = ["MARKET", "USDINR", "BRENT", "GOLD_USD", "RATES_PROXY"];
+    let has_pct_after = |name: &str| {
+        paragraph.match_indices(name).any(|(i, _)| {
+            let tail: String = paragraph[i + name.len()..].chars().take(40).collect();
+            tail.contains('%')
+        })
+    };
+    let factor = FACTORS.iter().any(|f| has_pct_after(f));
+    let holding = paragraph
+        .split_whitespace()
+        .filter(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.')
+                .ends_with(".NS")
+        })
+        .any(|w| has_pct_after(w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.')));
+    factor && holding
+}
+
+const FACTOR_VIEW_NARRATION: &str = "Your portfolio runs at 14.7% annualised volatility, with MARKET accounting for 77.5% of it and GOLD_USD for 10.8%. Specific risk makes up the remaining 11.5%. I recommend reviewing GOLDCASE.NS, your largest single-name contributor.";
+const MIXED_NARRATION: &str = "Your portfolio runs at 14.7% annualised volatility, with MARKET accounting for 77.5% of it. GOLDCASE.NS alone contributes 28.5% of volatility.";
+
+#[test]
+fn factor_view_narration_with_holding_only_in_recommendation_is_consistent() {
+    assert!(!mixes_factor_and_holding_percentages(FACTOR_VIEW_NARRATION));
+}
+
+#[test]
+fn mixed_factor_and_holding_percentages_are_detected() {
+    assert!(mixes_factor_and_holding_percentages(MIXED_NARRATION));
+}
+
+#[test]
+fn narrate_prompt_forbids_mixing_decomposition_views() {
+    use agent::narrate::NARRATE_SYSTEM_PROMPT as P;
+    assert!(P.contains("RULE 6 ADDITION"));
+    assert!(P.contains("never both"));
+    assert!(P.contains("recommendations may name a\nspecific holding even when the body uses\nfactor decomposition"));
+}

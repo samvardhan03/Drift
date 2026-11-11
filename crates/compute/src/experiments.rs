@@ -8,16 +8,17 @@ use nalgebra::{DMatrix, DVector};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::data::{DataQuality, FACTOR_NAMES};
+use crate::data::{DataQuality, MarketData, FACTOR_NAMES};
 use crate::error::{ComputeError, Result};
 use crate::model::{annualize_scalar, FactorModel, Frequency};
-use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams};
+use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams, ShortHistoryTicker};
 
 /// One portfolio line: ticker plus portfolio weight (fraction of total
 /// value, not percent).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Holding {
     pub ticker: String,
+    #[serde(serialize_with = "crate::format::round_6dp_serialize")]
     pub weight: f64,
 }
 
@@ -154,6 +155,13 @@ pub struct FactorShockOutput {
     /// did not specify (empty if `propagate` is false, or if all factors
     /// were given), in both simple and log form.
     pub implied_shocks: BTreeMap<String, ShockValue>,
+    /// Display-ready mirror of the input `shocks_pct`, in percentage
+    /// points (e.g. -15.0 for -15%). Unlike `given_shocks` (fractions),
+    /// no conversion is needed to show this.
+    pub given_shocks_pct: BTreeMap<String, f64>,
+    /// `implied_shocks.simple * 100`, rounded to 2dp: display-ready
+    /// percentage points.
+    pub implied_shocks_pct: BTreeMap<String, f64>,
     pub per_holding: Vec<HoldingShockResult>,
     /// Sum of `per_holding.pnl_inr`: value * simple_return per holding,
     /// summed. Exact (not an approximation) regardless of
@@ -201,6 +209,11 @@ pub struct FactorShockOutput {
     /// no-op.
     pub crisis_comparison: Option<CrisisComparisonOutput>,
     pub crisis_comparison_note: Option<&'static str>,
+    /// Empirical/statistical context for this run's MARKET shock (whether
+    /// caller-specified or conditionally implied), relative to the
+    /// market's own historical return distribution over the fitted
+    /// window -- see `scenarios::compute_shock_context`'s doc.
+    pub shock_historical_context: crate::scenarios::ShockContext,
 }
 
 /// The alternative shock outcome under crisis-regime covariance —
@@ -395,6 +408,7 @@ fn propagate_and_price(
 pub fn run_factor_shock(
     data_quality: &DataQuality,
     data_window: DataWindow,
+    data: &MarketData,
     model: &FactorModel,
     input: &FactorShockInput,
 ) -> Result<(FactorShockOutput, EvidenceTrace)> {
@@ -496,6 +510,25 @@ pub fn run_factor_shock(
 
     let invariants = primary.invariants;
 
+    // Empirical/statistical context for the MARKET shock: whether given
+    // directly or conditionally implied, `primary.full_shock[market_idx]`
+    // is the realized MARKET move for this run -- in log space already,
+    // or converted from simple space the same way `gold_inr_implied_move`
+    // above does, via `log_shock_at`.
+    let market_idx = factor_names.iter().position(|n| n == "MARKET").unwrap();
+    let market_shock_log = log_shock_at(market_idx);
+    let market_series = data
+        .factor_returns
+        .get("MARKET")
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let total_obs = market_series.len();
+    let window = model.window.min(total_obs);
+    let market_window = &market_series[total_obs - window..];
+    let date_window = &data.dates[data.dates.len() - window..];
+    let shock_historical_context =
+        crate::scenarios::compute_shock_context(market_window, date_window, market_shock_log);
+
     const CRISIS_REGIME: usize = 2;
     let (crisis_comparison, crisis_comparison_note) = match &model.regime_state {
         Some(state) if state.current_regime as usize != CRISIS_REGIME => {
@@ -530,10 +563,18 @@ pub fn run_factor_shock(
         _ => (None, None),
     };
 
+    let given_shocks_pct = input.shocks_pct.clone();
+    let implied_shocks_pct: BTreeMap<String, f64> = implied_shocks
+        .iter()
+        .map(|(k, v)| (k.clone(), (v.simple * 100.0 * 100.0).round() / 100.0))
+        .collect();
+
     let output = FactorShockOutput {
         linear_approximation: input.linear_approximation,
         given_shocks,
         implied_shocks,
+        given_shocks_pct,
+        implied_shocks_pct,
         per_holding: primary.per_holding,
         portfolio_pnl_inr: primary.portfolio_pnl_inr,
         formatted_pnl_inr: crate::format::format_inr(primary.portfolio_pnl_inr),
@@ -544,6 +585,7 @@ pub fn run_factor_shock(
         gold_inr_implied_move,
         crisis_comparison,
         crisis_comparison_note,
+        shock_historical_context,
     };
 
     let note = if input.linear_approximation {
@@ -574,6 +616,14 @@ pub fn run_factor_shock(
             regime_state: model.regime_state.clone(),
             regime_fallback_warnings: model.regime_fallback_warnings.clone(),
             cap_source: None,
+            short_history_tickers: model
+                .short_history_tickers
+                .iter()
+                .map(|(t, n)| ShortHistoryTicker {
+                    ticker: t.clone(),
+                    obs_count: *n,
+                })
+                .collect(),
         },
         outputs: serde_json::json!({
             "result": output,
@@ -586,6 +636,7 @@ pub fn run_factor_shock(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))
@@ -659,11 +710,46 @@ pub struct RiskDecompositionOutput {
     /// Factor correlation matrix at fit time. Added for the same reason as
     /// `portfolio_betas` -- `RiskDrift`'s correlation-drift comparison.
     pub factor_correlation: CorrelationMatrix,
+    /// GARCH(1,1) volatility forecast fit on the portfolio's own daily log
+    /// returns (not any single holding's) -- see `garch::fit_garch`.
+    pub garch_forecast: crate::garch::GarchForecast,
+}
+
+/// The portfolio's own daily log returns, `Sum_i w_i * r_{i,t}`, built from
+/// `data.stock_returns` (each ticker's own aligned return series, per
+/// `portfolio.tickers()`/`portfolio.weights()` order). Holdings can have
+/// differently-lengthed histories (a recently listed one; see
+/// `data::trailing_non_none_run`), so this uses the same right-aligned
+/// common-length convention as `cvar`/`performance`/`policy`'s historical-
+/// scenario math: the minimum length across holdings, each series' own
+/// tail of that length.
+fn portfolio_daily_log_returns(data: &MarketData, portfolio: &Portfolio) -> Result<Vec<f64>> {
+    let tickers = portfolio.tickers();
+    let weights = portfolio.weights();
+    let series: Vec<&Vec<f64>> = tickers
+        .iter()
+        .map(|t| {
+            data.stock_returns
+                .get(t)
+                .ok_or_else(|| ComputeError::Model(format!("missing return series for {t}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let n = series.iter().map(|s| s.len()).min().unwrap_or(0);
+    let offsets: Vec<usize> = series.iter().map(|s| s.len() - n).collect();
+    let out = (0..n)
+        .map(|t| {
+            (0..tickers.len())
+                .map(|i| weights[i] * series[i][offsets[i] + t])
+                .sum()
+        })
+        .collect();
+    Ok(out)
 }
 
 pub fn run_risk_decomposition(
     data_quality: &DataQuality,
     data_window: DataWindow,
+    data: &MarketData,
     model: &FactorModel,
     input: &RiskDecompositionInput,
 ) -> Result<(RiskDecompositionOutput, EvidenceTrace)> {
@@ -766,6 +852,10 @@ pub fn run_risk_decomposition(
     } else {
         0.0
     };
+
+    let portfolio_returns = portfolio_daily_log_returns(data, &input.portfolio)?;
+    let garch_forecast = crate::garch::fit_garch(&portfolio_returns)?;
+
     let output = RiskDecompositionOutput {
         portfolio_vol_annualized: vol,
         portfolio_vol_annualized_pct: crate::format::to_pct_2dp(vol),
@@ -776,6 +866,7 @@ pub fn run_risk_decomposition(
         specific_risk_fraction_of_vol_pct: crate::format::to_pct_2dp(specific_risk_fraction_of_vol),
         portfolio_betas,
         factor_correlation,
+        garch_forecast,
     };
 
     let trace = EvidenceTrace {
@@ -794,6 +885,14 @@ pub fn run_risk_decomposition(
             regime_state: model.regime_state.clone(),
             regime_fallback_warnings: model.regime_fallback_warnings.clone(),
             cap_source: None,
+            short_history_tickers: model
+                .short_history_tickers
+                .iter()
+                .map(|(t, n)| ShortHistoryTicker {
+                    ticker: t.clone(),
+                    obs_count: *n,
+                })
+                .collect(),
         },
         outputs: serde_json::json!({ "result": output }),
         invariants,
@@ -803,6 +902,7 @@ pub fn run_risk_decomposition(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))

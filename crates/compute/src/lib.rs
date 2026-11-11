@@ -6,13 +6,17 @@ pub mod drift;
 pub mod error;
 pub mod experiments;
 pub mod format;
+pub mod garch;
+pub mod isin;
 pub mod model;
 pub mod performance;
 pub mod policy;
 pub mod portfolio;
+pub mod portfolio_history;
 pub mod regime;
 pub mod reverse_stress;
 pub mod scenarios;
+pub mod ticker_map;
 pub mod trace;
 
 pub use error::{ComputeError, Result};

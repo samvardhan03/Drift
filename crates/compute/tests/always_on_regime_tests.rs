@@ -63,6 +63,7 @@ fn all_experiment_types_have_non_null_regime_state_on_real_data() {
     let (_, trace) = run_factor_shock(
         &data.quality,
         data_window.clone(),
+        &data,
         &model,
         &factor_shock_input,
     )
@@ -81,6 +82,7 @@ fn all_experiment_types_have_non_null_regime_state_on_real_data() {
     let (_, trace) = run_risk_decomposition(
         &data.quality,
         data_window.clone(),
+        &data,
         &model,
         &risk_decomp_input,
     )

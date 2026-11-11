@@ -32,7 +32,7 @@ use crate::error::{ComputeError, Result};
 use crate::experiments::{log_to_simple, simple_to_log, Portfolio};
 use crate::format::format_inr;
 use crate::model::{FactorModel, Frequency};
-use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams};
+use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams, ShortHistoryTicker};
 
 const MAX_GRADIENT_ITERS: u32 = 200;
 const GRADIENT_NORM_TOLERANCE: f64 = 1e-6;
@@ -476,6 +476,14 @@ pub fn run_reverse_stress(
             regime_state: model.regime_state.clone(),
             regime_fallback_warnings: model.regime_fallback_warnings.clone(),
             cap_source: None,
+            short_history_tickers: model
+                .short_history_tickers
+                .iter()
+                .map(|(t, n)| ShortHistoryTicker {
+                    ticker: t.clone(),
+                    obs_count: *n,
+                })
+                .collect(),
         },
         outputs: serde_json::json!({ "result": output }),
         invariants,
@@ -485,6 +493,7 @@ pub fn run_reverse_stress(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))

@@ -16,6 +16,23 @@ pub enum BackendError {
     /// one-sentence explanation. Maps to 422.
     #[error("{0}")]
     Unrecognised(String),
+    /// The planner declined the question as out of scope (an individual
+    /// stock price scenario, valuation, prediction, news, or non-finance);
+    /// the text is the redirect to show the user. `POST /ask` returns it as
+    /// a 200 with `is_redirect: true` (see `routes::post_ask`), never as an
+    /// error status.
+    #[error("{0}")]
+    Redirect(String),
+    /// A ticker Yahoo Finance doesn't know even after resolution (or an
+    /// ISIN given in place of a symbol); the message names it. Maps to 422.
+    #[error("{0}")]
+    UnresolvedTicker(String),
+    /// Too little price history to analyse; the message explains. Maps to 422.
+    #[error("{0}")]
+    InsufficientData(String),
+    /// Market data couldn't be fetched in time (Yahoo timeout/5xx). Maps to 503.
+    #[error("{0}")]
+    DataUnavailable(String),
     /// Any error from the compute layer (data fetch, model fit, LP solve,
     /// invalid input). Maps to 500.
     #[error("compute error: {0}")]
@@ -59,6 +76,7 @@ impl From<agent::orchestrator::OrchestratorError> for BackendError {
             agent::orchestrator::OrchestratorError::Unrecognised(text) => {
                 BackendError::Unrecognised(text)
             }
+            agent::orchestrator::OrchestratorError::Declined(text) => BackendError::Redirect(text),
             other => BackendError::Internal(other.to_string()),
         }
     }
@@ -86,12 +104,23 @@ impl From<agent::pipeline::PipelineError> for BackendError {
     fn from(err: agent::pipeline::PipelineError) -> Self {
         match err {
             agent::pipeline::PipelineError::Orchestrator(o) => BackendError::from(o),
-            agent::pipeline::PipelineError::Compute(c) => BackendError::Compute(c.to_string()),
+            agent::pipeline::PipelineError::Compute(c) => BackendError::from(c),
             agent::pipeline::PipelineError::Narrate(n) => BackendError::from(n),
             agent::pipeline::PipelineError::Suggest(s) => BackendError::from(s),
-            agent::pipeline::PipelineError::AllToolsFailed(errors) => {
-                BackendError::Compute(format!("every planned tool failed: {errors:?}"))
-            }
+            // A single failing tool keeps its own compute error's HTTP
+            // classification (e.g. 422 for InsufficientData/UnresolvedTicker,
+            // via the `From<ComputeError>` impl below) instead of collapsing
+            // into a generic 500. Multiple failures, or a non-compute
+            // failure (unknown tool name, bad params), still fall back to
+            // the generic message -- there's no single error left to defer
+            // to.
+            agent::pipeline::PipelineError::AllToolsFailed(mut errors) => match errors.as_slice() {
+                [agent::orchestrator::ToolError::Compute(_)] => match errors.pop().unwrap() {
+                    agent::orchestrator::ToolError::Compute(e) => BackendError::from(e),
+                    agent::orchestrator::ToolError::Other(_) => unreachable!(),
+                },
+                _ => BackendError::Compute(format!("every planned tool failed: {errors:?}")),
+            },
         }
     }
 }
@@ -106,9 +135,39 @@ impl From<compute::ComputeError> for BackendError {
             // not the generic 500 every other compute error gets. Same
             // reasoning for ReverseStress's "threshold unreachable within
             // bounds" case.
-            compute::ComputeError::NoPriorSnapshot(message) => BackendError::Unrecognised(message),
+            // The compute layer's own message names the specific
+            // baseline/snapshot id problem, which isn't actionable for an
+            // end user -- surface a fixed, user-facing instruction instead.
+            compute::ComputeError::NoPriorSnapshot(_) => BackendError::Unrecognised(
+                "No prior risk snapshot found for this portfolio. Run a risk analysis first \
+                 before checking drift."
+                    .to_string(),
+            ),
             compute::ComputeError::ReverseStressInfeasible(message) => {
                 BackendError::Unrecognised(message)
+            }
+            // A ticker that still 404s after `ticker_map::resolve_ticker`'s
+            // resolution order is the caller's problem (bad/delisted
+            // symbol in the uploaded portfolio), not this service's -- 422,
+            // same reasoning as the two cases above. Its message is already
+            // user-friendly (see `data::load_series_resolved`), so it's
+            // passed through as-is.
+            compute::ComputeError::UnresolvedTicker(message) => {
+                BackendError::UnresolvedTicker(message)
+            }
+            compute::ComputeError::DataUnavailable(message) => {
+                BackendError::DataUnavailable(message)
+            }
+            // Likewise a request problem (the portfolio/time window the
+            // caller chose), not an internal failure -- the compute-layer
+            // message is wrapped with user-facing framing and a concrete
+            // suggestion.
+            compute::ComputeError::InsufficientData(message) => {
+                let message = message.trim_end_matches('.');
+                BackendError::InsufficientData(format!(
+                    "One or more holdings don't have enough price history for analysis. {message}. \
+                     Try removing recently listed stocks from your portfolio."
+                ))
             }
             other => BackendError::Compute(other.to_string()),
         }
@@ -256,5 +315,86 @@ impl Backend for RealBackend {
         )
         .await?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_prior_snapshot_maps_to_a_fixed_user_facing_422_message() {
+        let err: BackendError = compute::ComputeError::NoPriorSnapshot(
+            "no stored snapshot found for id \"abc\"".to_string(),
+        )
+        .into();
+        match err {
+            BackendError::Unrecognised(msg) => {
+                assert_eq!(
+                    msg,
+                    "No prior risk snapshot found for this portfolio. Run a risk analysis first \
+                     before checking drift."
+                );
+            }
+            other => panic!("expected BackendError::Unrecognised, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unresolved_ticker_message_is_passed_through_as_is() {
+        let original = "Could not fetch market data for ticker 'FOO.NS' (tried 'FOO.NS'). \
+                         This symbol may be delisted, suspended, or use a different name on \
+                         Yahoo Finance. Please remove it from your portfolio or replace it with \
+                         the correct NSE symbol."
+            .to_string();
+        let err: BackendError = compute::ComputeError::UnresolvedTicker(original.clone()).into();
+        match err {
+            BackendError::UnresolvedTicker(msg) => assert_eq!(msg, original),
+            other => panic!("expected BackendError::UnresolvedTicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn insufficient_data_is_wrapped_with_user_facing_framing_and_a_suggestion() {
+        let err: BackendError = compute::ComputeError::InsufficientData(
+            "ticker FOO.NS has only 20 return observations".to_string(),
+        )
+        .into();
+        match err {
+            BackendError::InsufficientData(msg) => {
+                assert!(msg.starts_with(
+                    "One or more holdings don't have enough price history for analysis."
+                ));
+                assert!(msg.contains("ticker FOO.NS has only 20 return observations"));
+                assert!(msg.contains("Try removing recently listed stocks from your portfolio."));
+            }
+            other => panic!("expected BackendError::InsufficientData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn data_unavailable_maps_to_its_own_variant() {
+        let err: BackendError = compute::ComputeError::DataUnavailable("x".to_string()).into();
+        assert!(matches!(err, BackendError::DataUnavailable(m) if m == "x"));
+    }
+
+    #[test]
+    fn exhausted_gemini_retries_map_to_gemini_unavailable() {
+        let err: BackendError = GeminiError::Unavailable {
+            attempts: 6,
+            last_error: "status 503".to_string(),
+        }
+        .into();
+        assert!(matches!(err, BackendError::GeminiUnavailable(_)));
+    }
+
+    #[test]
+    fn every_other_compute_error_still_maps_to_the_generic_500_compute_variant() {
+        let err: BackendError =
+            compute::ComputeError::Data("some internal detail".to_string()).into();
+        match err {
+            BackendError::Compute(_) => {}
+            other => panic!("expected BackendError::Compute, got {other:?}"),
+        }
     }
 }

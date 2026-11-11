@@ -20,7 +20,7 @@ use crate::data::{DataQuality, MarketData, FACTOR_NAMES};
 use crate::error::{ComputeError, Result};
 use crate::experiments::{log_to_simple, run_factor_shock, FactorShockInput, Portfolio};
 use crate::model::FactorModel;
-use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams};
+use crate::trace::{DataWindow, EvidenceTrace, InvariantCheck, ModelParams, ShortHistoryTicker};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct RiskPolicy {
@@ -153,13 +153,23 @@ pub fn portfolio_cvar_95(portfolio: &Portfolio, data: &MarketData) -> Result<f64
                 .ok_or_else(|| ComputeError::Model(format!("missing return series for {t}")))
         })
         .collect::<Result<Vec<_>>>()?;
-    let scenario_count = series[0].len();
+    // Scenarios pair same-date returns across tickers, so this needs a
+    // length common to every holding -- the minimum across all of them,
+    // not just the first (holdings can now have differently-lengthed
+    // histories; see `data::trailing_non_none_run`). Each series is
+    // right-aligned to the same most-recent date, so a shorter series'
+    // offset `s` from that common window must be re-anchored to its own
+    // (later) start index, not read from its own index 0.
+    let scenario_count = series.iter().map(|s| s.len()).min().unwrap_or(0);
     let k = ((scenario_count as f64) * 0.05).round().max(1.0) as usize;
 
     let mut losses: Vec<f64> = (0..scenario_count)
         .map(|s| {
             let portfolio_return: f64 = (0..tickers.len())
-                .map(|i| w[i] * log_to_simple(series[i][s]))
+                .map(|i| {
+                    let offset = series[i].len() - scenario_count;
+                    w[i] * log_to_simple(series[i][offset + s])
+                })
                 .sum();
             -portfolio_return
         })
@@ -175,6 +185,7 @@ pub fn portfolio_cvar_95(portfolio: &Portfolio, data: &MarketData) -> Result<f64
 pub fn scenario_loss_pct(
     data_quality: &DataQuality,
     data_window: DataWindow,
+    data: &MarketData,
     portfolio: &Portfolio,
     model: &FactorModel,
     scenario_id: &str,
@@ -199,7 +210,7 @@ pub fn scenario_loss_pct(
         frequency: model.frequency,
         window: Some(model.window),
     };
-    let (output, _trace) = run_factor_shock(data_quality, data_window, model, &input)?;
+    let (output, _trace) = run_factor_shock(data_quality, data_window, data, model, &input)?;
     Ok(output.portfolio_pnl_inr.abs() / portfolio.total_value_inr.abs())
 }
 
@@ -287,6 +298,7 @@ pub fn evaluate_policy(
             let loss_pct = scenario_loss_pct(
                 &data.quality,
                 data_window.clone(),
+                data,
                 portfolio,
                 model,
                 &scenario_limit.scenario_id,
@@ -381,6 +393,7 @@ pub fn run_policy_check(
             let loss_pct = scenario_loss_pct(
                 data_quality,
                 data_window.clone(),
+                data,
                 portfolio,
                 model,
                 &scenario_limit.scenario_id,
@@ -428,6 +441,14 @@ pub fn run_policy_check(
             regime_state: model.regime_state.clone(),
             regime_fallback_warnings: model.regime_fallback_warnings.clone(),
             cap_source: None,
+            short_history_tickers: model
+                .short_history_tickers
+                .iter()
+                .map(|(t, n)| ShortHistoryTicker {
+                    ticker: t.clone(),
+                    obs_count: *n,
+                })
+                .collect(),
         },
         outputs: serde_json::json!({ "result": output }),
         invariants,
@@ -437,6 +458,7 @@ pub fn run_policy_check(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))

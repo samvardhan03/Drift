@@ -159,13 +159,21 @@ pub fn run_portfolio_performance(
                 .ok_or_else(|| ComputeError::Model(format!("missing return series for {t}")))
         })
         .collect::<Result<Vec<_>>>()?;
-    let total_obs = series[0].len();
+    // Portfolio-level periods pair same-date returns across holdings, so
+    // this needs a length common to every holding -- the minimum across
+    // all of them, not just the first (holdings can now have
+    // differently-lengthed histories; see `data::trailing_non_none_run`).
+    let total_obs = series.iter().map(|s| s.len()).min().unwrap_or(0);
     if window > total_obs {
         return Err(ComputeError::InvalidInput(format!(
             "requested window ({window}) exceeds available observations ({total_obs})"
         )));
     }
-    let start = total_obs - window;
+    // Every series is right-aligned to the same most-recent date but may
+    // have a different length (see `data::trailing_non_none_run`), so each
+    // ticker's own trailing-`window` slice starts at its own offset, not a
+    // single shared `start`.
+    let offsets: Vec<usize> = series.iter().map(|s| s.len() - window).collect();
 
     // Constant-mix simplification: each period's portfolio return is the
     // *current* weights applied to that period's per-holding simple
@@ -177,7 +185,7 @@ pub fn run_portfolio_performance(
     let mut period_returns: Vec<f64> = Vec::with_capacity(window);
     for s in 0..window {
         let r: f64 = (0..tickers.len())
-            .map(|i| weights[i] * log_to_simple(series[i][start + s]))
+            .map(|i| weights[i] * log_to_simple(series[i][offsets[i] + s]))
             .sum();
         period_returns.push(r);
     }
@@ -232,7 +240,7 @@ pub fn run_portfolio_performance(
         .enumerate()
         .map(|(i, ticker)| {
             let (total_return_i, annualized_vol_i, max_drawdown_i) =
-                holding_performance(series[i], start, window, ann_factor);
+                holding_performance(series[i], offsets[i], window, ann_factor);
             let annualized_return_i = (1.0 + total_return_i).powf(ann_factor / window as f64) - 1.0;
             let total_return_pct = to_pct_2dp(total_return_i);
             (
@@ -305,6 +313,7 @@ pub fn run_portfolio_performance(
         regime_state,
         regime_fallback_warnings: Vec::new(),
         cap_source: None,
+        short_history_tickers: Vec::new(),
     };
 
     let trace = EvidenceTrace {
@@ -329,6 +338,7 @@ pub fn run_portfolio_performance(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))
