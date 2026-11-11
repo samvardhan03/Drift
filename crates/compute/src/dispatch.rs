@@ -15,7 +15,8 @@ use crate::model::Frequency;
 use crate::trace::{DataWindow, EvidenceTrace};
 use crate::Result;
 
-const CACHE_DIR: &str = "data/cache";
+/// Where fetched price series are cached on disk.
+pub const CACHE_DIR: &str = "data/cache";
 
 fn build_data_window(data: &MarketData, window: usize, frequency: Frequency) -> DataWindow {
     DataWindow {
@@ -72,6 +73,46 @@ pub fn run_experiment(
     portfolio: &crate::experiments::Portfolio,
     ctx: &ExperimentContext,
 ) -> Result<EvidenceTrace> {
+    let (mut trace, data) = run_experiment_inner(experiment, portfolio, ctx)?;
+    // `RiskDrift` fits its own models internally and doesn't hand back its
+    // `MarketData`; reload it (from the disk cache) for the history only.
+    let data = match data {
+        Some(d) => Some(d),
+        None => crate::data::load_market_data(
+            Path::new(CACHE_DIR),
+            &portfolio.tickers(),
+            false,
+            trace.model_params.frequency,
+        )
+        .ok(),
+    };
+    if let Some(data) = data {
+        trace.portfolio_history = build_history(&trace, &data, portfolio);
+    }
+    Ok(trace)
+}
+
+/// `portfolio_history` for `trace`'s window, or `None` if no regime path
+/// is available (see `portfolio_history::compute_portfolio_history`).
+fn build_history(
+    trace: &EvidenceTrace,
+    data: &MarketData,
+    portfolio: &crate::experiments::Portfolio,
+) -> Option<crate::portfolio_history::PortfolioHistory> {
+    use crate::portfolio_history as ph;
+    let regime = ph::regime_for_history(
+        trace.model_params.regime_state.as_ref(),
+        data,
+        trace.model_params.frequency.default_window(),
+    )?;
+    ph::compute_portfolio_history(data, portfolio, &regime, ph::DEFAULT_HISTORY_DAYS)
+}
+
+fn run_experiment_inner(
+    experiment: &Experiment,
+    portfolio: &crate::experiments::Portfolio,
+    ctx: &ExperimentContext,
+) -> Result<(EvidenceTrace, Option<MarketData>)> {
     let cache_dir = Path::new(CACHE_DIR);
     match experiment {
         Experiment::FactorShock(input) => {
@@ -84,9 +125,15 @@ pub fn run_experiment(
                 crate::model::ModelConfig::new(window, input.frequency),
             )?;
             let data_window = build_data_window(&data, window, input.frequency);
-            let (_, trace) =
-                crate::experiments::run_factor_shock(&data.quality, data_window, &model, input)?;
-            maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)
+            let (_, trace) = crate::experiments::run_factor_shock(
+                &data.quality,
+                data_window,
+                &data,
+                &model,
+                input,
+            )?;
+            let trace = maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)?;
+            Ok((trace, Some(data)))
         }
         Experiment::RiskDecomposition(input) => {
             let tickers = input.portfolio.tickers();
@@ -101,16 +148,18 @@ pub fn run_experiment(
             let (_, trace) = crate::experiments::run_risk_decomposition(
                 &data.quality,
                 data_window,
+                &data,
                 &model,
                 input,
             )?;
-            maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)
+            let trace = maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)?;
+            Ok((trace, Some(data)))
         }
         Experiment::CvarRebalance(input) => {
             let tickers = input.portfolio.tickers();
             let data = crate::data::load_market_data(cache_dir, &tickers, false, input.frequency)?;
             let (_, trace) = crate::cvar::run_cvar_rebalance(&data.quality, &data, input)?;
-            Ok(trace)
+            Ok((trace, Some(data)))
         }
         Experiment::PortfolioPerformance(input) => {
             let tickers = input.portfolio.tickers();
@@ -133,14 +182,15 @@ pub fn run_experiment(
                     &tickers,
                     crate::model::ModelConfig::new(window, input.frequency),
                 )?;
-                maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)
+                let trace = maybe_attach_policy(trace, ctx, &input.portfolio, &data, &model)?;
+                Ok((trace, Some(data)))
             } else {
-                Ok(trace)
+                Ok((trace, Some(data)))
             }
         }
         Experiment::RiskDrift(input) => {
             let (_, trace) = crate::drift::run_risk_drift(cache_dir, portfolio, input, ctx)?;
-            Ok(trace)
+            Ok((trace, None))
         }
         Experiment::ReverseStress(input) => {
             let tickers = portfolio.tickers();
@@ -160,7 +210,8 @@ pub fn run_experiment(
                 portfolio,
                 input,
             )?;
-            maybe_attach_policy(trace, ctx, portfolio, &data, &model)
+            let trace = maybe_attach_policy(trace, ctx, portfolio, &data, &model)?;
+            Ok((trace, Some(data)))
         }
         Experiment::PolicyCheck(input) => {
             let tickers = portfolio.tickers();
@@ -181,7 +232,7 @@ pub fn run_experiment(
                 portfolio,
                 input,
             )?;
-            Ok(trace)
+            Ok((trace, Some(data)))
         }
     }
 }

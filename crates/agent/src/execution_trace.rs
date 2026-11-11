@@ -29,6 +29,13 @@ pub struct GroundingStatus {
     pub passed: bool,
     pub warnings: Vec<String>,
     pub retry_count: u32,
+    /// Direction/recommendation contradictions left in the narration after
+    /// retries (see `crate::direction`); empty when none, or when a retry
+    /// corrected them.
+    #[serde(default)]
+    pub directional_checks: Vec<crate::direction::DirectionalViolation>,
+    #[serde(default)]
+    pub directional_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

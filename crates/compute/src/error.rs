@@ -41,6 +41,29 @@ pub enum ComputeError {
     /// problem, not an internal failure.
     #[error("{0}")]
     ReverseStressInfeasible(String),
+
+    /// A ticker still 404'd from Yahoo Finance after `ticker_map::resolve_ticker`
+    /// ran its full resolution order -- a request problem (the symbol is
+    /// delisted, suspended, or genuinely unknown), not an internal failure.
+    /// Distinct from `Data` for the same reason as `NoPriorSnapshot`: callers
+    /// map it to its own HTTP status (422) instead of a generic 500.
+    #[error("{0}")]
+    UnresolvedTicker(String),
+
+    /// Not enough return observations to fit the factor model reliably --
+    /// either a single ticker has fewer than `model::MIN_TICKER_OBSERVATIONS`
+    /// return observations (too recently listed), or the shared factor-model
+    /// window itself (bounded by how much factor history exists) has fallen
+    /// below `model::MIN_MODEL_WINDOW`. A request problem (the caller's
+    /// portfolio/time window), not an internal failure -- maps to 422.
+    #[error("{0}")]
+    InsufficientData(String),
+
+    /// Yahoo Finance couldn't be reached in time (timeout, connection
+    /// failure, or a 429/5xx response) -- transient, and this service's
+    /// upstream problem rather than the caller's. Maps to 503.
+    #[error("{0}")]
+    DataUnavailable(String),
 }
 
 pub type Result<T> = std::result::Result<T, ComputeError>;

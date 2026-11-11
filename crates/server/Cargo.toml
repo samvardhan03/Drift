@@ -15,6 +15,8 @@ store = { path = "../store" }
 axum = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true, features = ["net", "signal"] }
 tower-http = { version = "0.6", features = ["cors"] }
+reqwest.workspace = true
+urlencoding = "2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -24,7 +26,7 @@ async-trait.workspace = true
 printpdf = "=0.12.8"
 uuid.workspace = true
 chrono = { workspace = true, features = ["serde"] }
-calamine = "0.36"
+calamine = "0.38"
 csv.workspace = true
 
 [dev-dependencies]

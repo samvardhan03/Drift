@@ -584,6 +584,10 @@
         showOutputError("Fix the portfolio (see the note below the portfolio builder) and try again.");
         return;
       }
+      if (body.code === "ai_not_configured") {
+        showOutputError(body.error);
+        return;
+      }
       if (response.status >= 500) {
         showOutputError("Something went wrong -- please try again.");
         return;

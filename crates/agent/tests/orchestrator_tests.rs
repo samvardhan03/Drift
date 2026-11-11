@@ -116,12 +116,79 @@ async fn an_off_topic_message_declines_instead_of_running_a_fallback_experiment(
         .unwrap_err();
 
     match err {
-        agent::orchestrator::OrchestratorError::Unrecognised(text) => {
+        agent::orchestrator::OrchestratorError::Declined(text) => {
             assert_eq!(
                 text,
                 "I can only help with questions about your portfolio's risk and performance."
             );
         }
-        other => panic!("expected Unrecognised, got {other:?}"),
+        other => panic!("expected Declined, got {other:?}"),
+    }
+}
+
+// The two tests below pin the planning prompt's rules text -- the model's
+// actual behaviour on these questions can only be verified live (the mock
+// returns canned plans), so these guard against the rules being lost or
+// reworded away in a later edit.
+
+#[test]
+fn planning_prompt_maps_commodity_questions_to_factor_shocks() {
+    use agent::orchestrator::PLANNING_SYSTEM_PROMPT as P;
+    assert!(P.contains("'crude', 'oil', 'petrol', 'diesel', 'Brent' going up/spike/rise -> factor_shock BRENT: +20.0"));
+    assert!(P.contains("'crude', 'oil' going down/fall/crash -> factor_shock BRENT: -20.0"));
+    assert!(P.contains("'what would happen if'"));
+    assert!(P.contains("ALWAYS portfolio risk questions"));
+}
+
+#[test]
+fn planning_prompt_analyses_held_stock_questions_and_scopes_what_it_declines() {
+    use agent::orchestrator::PLANNING_SYSTEM_PROMPT as P;
+    assert!(P.contains("select portfolio_performance AND include"));
+    assert!(P.contains("'focus_holding'"));
+    assert!(P.contains("Never decline a question about portfolio risk, returns, macro factors or a named historical event"));
+}
+
+#[tokio::test]
+async fn a_crude_spike_plan_carries_brent_plus_20_through_planning() {
+    let client = MockGeminiClient::new(vec![text_response(
+        r#"[{"tool": "factor_shock", "params": {"shocks_pct": {"BRENT": 20.0}}, "reason": "crude spike"}]"#,
+    )]);
+    let (plans, _raw) = plan_tools(&client, "crude prices go higher", &[])
+        .await
+        .unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].tool, "factor_shock");
+    assert_eq!(plans[0].params["shocks_pct"]["BRENT"], 20.0);
+}
+
+const GREETING_REPLY: &str = "Hello! I'm your portfolio risk analyst. Ask me anything about your portfolio -- try \"What is my risk right now?\" or \"What would a market crash do to me?\"";
+
+#[test]
+fn planning_prompt_routes_greetings_to_decline_with_the_greeting_reply() {
+    use agent::orchestrator::PLANNING_SYSTEM_PROMPT as P;
+    assert!(P.contains("RULE 0 -- Greeting detection"));
+    assert!(P.contains("hi, hello, hey, good morning, good evening, namaste, hola, thanks, thank you, ok, okay, sure, got it"));
+    assert!(P.contains("Do not run any experiment for a greeting."));
+    // The reply is embedded verbatim, quotes unescaped as the model sees them.
+    assert!(P.contains(GREETING_REPLY));
+    // Greeting rule precedes every routing rule.
+    assert!(P.find("RULE 0 -- Greeting detection").unwrap() < P.find("ROUTING RULE 0").unwrap());
+}
+
+#[tokio::test]
+async fn greetings_decline_with_the_greeting_reply_and_run_no_experiment() {
+    for greeting in ["Hi", "Hello", "Namaste", "Thanks"] {
+        let plan = serde_json::json!([{"tool": "decline", "params": {}, "reason": GREETING_REPLY}])
+            .to_string();
+        let client = MockGeminiClient::new(vec![text_response(&plan)]);
+
+        let err = plan_tools(&client, greeting, &[]).await.unwrap_err();
+
+        match err {
+            agent::orchestrator::OrchestratorError::Declined(text) => {
+                assert_eq!(text, GREETING_REPLY, "{greeting}")
+            }
+            other => panic!("{greeting}: expected Declined, got {other:?}"),
+        }
     }
 }

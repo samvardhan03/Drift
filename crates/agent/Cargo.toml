@@ -19,6 +19,7 @@ reqwest.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 regex.workspace = true
+tracing.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]

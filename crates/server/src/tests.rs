@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -14,7 +16,8 @@ use compute::trace::{DataWindow, EvidenceTrace, ModelParams};
 
 use crate::backend::{Backend, BackendError};
 use crate::build_router;
-use crate::routes::AppState;
+use crate::routes::{AppState, UpstoxConfig};
+use crate::upstox::{UpstoxClient, UpstoxError, UpstoxHolding};
 
 fn sample_portfolio() -> Portfolio {
     Portfolio {
@@ -46,6 +49,8 @@ fn sample_regime_state() -> RegimeState {
         log_likelihood: -123.45,
         n_iter: 12,
         smoothing_note: "full-history smoothed, not suitable for live trading signals",
+        transition_matrix: [[0.0; 3]; 3],
+        regime_forecast: vec![],
     }
 }
 
@@ -76,6 +81,7 @@ fn sample_trace() -> EvidenceTrace {
             regime_state: Some(sample_regime_state()),
             regime_fallback_warnings: vec![],
             cap_source: None,
+            short_history_tickers: vec![],
         },
         outputs: serde_json::json!({ "result": { "portfolio_vol_annualized": 0.1552 } }),
         invariants: vec![],
@@ -85,6 +91,7 @@ fn sample_trace() -> EvidenceTrace {
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     }
 }
 
@@ -112,6 +119,7 @@ fn sample_execution_trace() -> agent::AgentExecutionTrace {
             passed: true,
             warnings: vec![],
             retry_count: 0,
+            ..Default::default()
         },
         suggestion: "What if I reduce my turnover to 20%?".to_string(),
         total_latency_ms: 10,
@@ -169,6 +177,7 @@ impl Backend for MockBackend {
                 narration: agent::grounding::GroundedNarration {
                     narration: r.narration.narration.clone(),
                     grounding_warnings: r.narration.grounding_warnings.clone(),
+                    ..Default::default()
                 },
                 assistant_turn: r.assistant_turn.clone(),
                 suggestion: r.suggestion.clone(),
@@ -191,8 +200,117 @@ fn app_with_backend_and_store(backend: MockBackend) -> (axum::Router, Arc<store:
     let app = build_router(AppState {
         backend: Arc::new(backend),
         store: store.clone(),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
     });
     (app, store)
+}
+
+/// A `Result<T, String>`-backed `UpstoxClient`: the `Err` variant carries
+/// the raw message `UpstoxError::TokenExchange`/`HoldingsFetch` would wrap
+/// (matching their "surface verbatim" contract), so a test configures
+/// exactly what the real API would have returned.
+struct MockUpstoxClient {
+    token_result: Result<String, String>,
+    holdings_result: Result<Vec<UpstoxHolding>, String>,
+}
+
+impl MockUpstoxClient {
+    /// For an `AppState` built by a test that never exercises the Upstox
+    /// routes at all -- any call into this is itself a test bug.
+    fn unused() -> Self {
+        MockUpstoxClient {
+            token_result: Err("MockUpstoxClient::unused() was called".to_string()),
+            holdings_result: Err("MockUpstoxClient::unused() was called".to_string()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl UpstoxClient for MockUpstoxClient {
+    async fn exchange_code_for_token(
+        &self,
+        _code: &str,
+        _client_id: &str,
+        _client_secret: &str,
+        _redirect_uri: &str,
+    ) -> Result<String, UpstoxError> {
+        self.token_result
+            .clone()
+            .map_err(UpstoxError::TokenExchange)
+    }
+
+    async fn fetch_holdings(&self, _access_token: &str) -> Result<Vec<UpstoxHolding>, UpstoxError> {
+        self.holdings_result
+            .clone()
+            .map_err(UpstoxError::HoldingsFetch)
+    }
+}
+
+fn unconfigured_upstox_config() -> UpstoxConfig {
+    UpstoxConfig {
+        api_key: None,
+        api_secret: None,
+        redirect_uri: "https://example.com/auth/upstox/callback".to_string(),
+    }
+}
+
+fn configured_upstox_config() -> UpstoxConfig {
+    UpstoxConfig {
+        api_key: Some("test-client-id".to_string()),
+        api_secret: Some("test-client-secret".to_string()),
+        redirect_uri: "https://example.com/auth/upstox/callback".to_string(),
+    }
+}
+
+/// Builds an app wired for the Upstox routes specifically: `configured`
+/// controls whether `UpstoxConfig` has credentials set, and the returned
+/// state map lets a test insert/inspect OAuth states directly (e.g. to
+/// simulate an expired one) rather than only through HTTP responses.
+fn app_with_upstox(
+    upstox_client: Arc<dyn UpstoxClient>,
+    configured: bool,
+) -> (axum::Router, Arc<Mutex<HashMap<String, Instant>>>) {
+    let backend = MockBackend {
+        experiment_result: None,
+        experiment_error: None,
+        ask_result: None,
+        received_conversation_history: Mutex::new(None),
+        received_policy: Mutex::new(None),
+    };
+    let upstox_config = if configured {
+        configured_upstox_config()
+    } else {
+        unconfigured_upstox_config()
+    };
+    let upstox_state_map = Arc::new(Mutex::new(HashMap::new()));
+    let app = build_router(AppState {
+        backend: Arc::new(backend),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config,
+        upstox_client,
+        upstox_state_map: upstox_state_map.clone(),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
+    });
+    (app, upstox_state_map)
 }
 
 /// Whether `needle` appears in a rendered PDF's actual text content.
@@ -363,6 +481,7 @@ async fn ask_with_mocked_pipeline_returns_grounding_warnings() {
             grounding_warnings: vec![
                 "unverified number '99%' at byte position 7 in the narration".to_string(),
             ],
+            ..Default::default()
         },
         assistant_turn: agent::ConversationTurn::assistant("Vol is 99% (unverified)."),
         suggestion: "What if I reduce my turnover to 20%?".to_string(),
@@ -423,6 +542,7 @@ async fn ask_with_non_empty_conversation_history_forwards_it_to_the_backend() {
         narration: agent::grounding::GroundedNarration {
             narration: "Vol is 15.5% annualised.".to_string(),
             grounding_warnings: vec![],
+            ..Default::default()
         },
         assistant_turn: agent::ConversationTurn::assistant("Vol is 15.5% annualised."),
         suggestion: "Now reduce my tail risk with 20% turnover?".to_string(),
@@ -438,6 +558,18 @@ async fn ask_with_non_empty_conversation_history_forwards_it_to_the_backend() {
     let app = build_router(AppState {
         backend: backend.clone(),
         store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
     });
 
     let req_body = serde_json::json!({
@@ -483,6 +615,7 @@ async fn report_route_returns_pdf_for_a_result_stored_by_a_prior_ask() {
         narration: agent::grounding::GroundedNarration {
             narration: "Vol is 15.5% annualised.".to_string(),
             grounding_warnings: vec![],
+            ..Default::default()
         },
         assistant_turn: agent::ConversationTurn::assistant("Vol is 15.5% annualised."),
         suggestion: "Now reduce my tail risk?".to_string(),
@@ -611,6 +744,7 @@ async fn execution_trace_route_returns_the_trace_stored_by_a_prior_ask() {
         narration: agent::grounding::GroundedNarration {
             narration: "Vol is 15.5% annualised.".to_string(),
             grounding_warnings: vec![],
+            ..Default::default()
         },
         assistant_turn: agent::ConversationTurn::assistant("Vol is 15.5% annualised."),
         suggestion: "What if I reduce my turnover to 20%?".to_string(),
@@ -990,7 +1124,11 @@ async fn upload_weights_not_summing_to_one_returns_400() {
 }
 
 #[tokio::test]
-async fn upload_single_holding_returns_400() {
+async fn upload_single_holding_returns_422() {
+    // A single surviving holding is now caught by the dedicated
+    // insufficient-holdings check (422) before it ever reaches
+    // `validate_portfolio`'s own, more general 400 check -- see the "File
+    // with only 1 holding after filtering" requirement this session adds.
     let csv = "ticker,weight\nRELIANCE.NS,1.0\n";
     let response = upload(
         empty_backend_app(),
@@ -1000,9 +1138,475 @@ async fn upload_single_holding_returns_400() {
     )
     .await;
 
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "insufficient_holdings");
+}
+
+// ---------------------------------------------------------------------
+// Broker-format upload support (9 brokers)
+// ---------------------------------------------------------------------
+
+/// Common assertions every per-broker test makes: 200, correct tickers
+/// (normalised to `.NS`), the value derived from quantity * price, and
+/// weights summing to 1.0 within 1e-6.
+fn assert_two_holding_portfolio(
+    body: &serde_json::Value,
+    ticker_a: &str,
+    value_a: f64,
+    ticker_b: &str,
+    value_b: f64,
+) {
+    assert_eq!(body["layout_detected"], "value");
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert_eq!(holdings.len(), 2);
+    let total = value_a + value_b;
+    assert!((body["portfolio"]["total_value_inr"].as_f64().unwrap() - total).abs() < 1e-6);
+
+    let find = |ticker: &str| holdings.iter().find(|h| h["ticker"] == ticker).cloned();
+    let a = find(ticker_a)
+        .unwrap_or_else(|| panic!("expected a holding for {ticker_a}, got {holdings:?}"));
+    let b = find(ticker_b)
+        .unwrap_or_else(|| panic!("expected a holding for {ticker_b}, got {holdings:?}"));
+    assert!((a["weight"].as_f64().unwrap() - value_a / total).abs() < 1e-5);
+    assert!((b["weight"].as_f64().unwrap() - value_b / total).abs() < 1e-5);
+
+    let sum: f64 = holdings.iter().map(|h| h["weight"].as_f64().unwrap()).sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "weights should sum to 1.0 within 1e-6, got {sum}"
+    );
+}
+
+#[tokio::test]
+async fn zerodha_format_parses_correctly() {
+    // Fixture reproduces Zerodha's real export shape: 3 metadata rows,
+    // then "Instrument"/"Qty."/"Avg. cost"/"LTP", then a trailing "Total"
+    // row (see crates/server/tests/fixtures/zerodha_holdings.xlsx).
+    let bytes = include_bytes!("../tests/fixtures/zerodha_holdings.xlsx");
+    let response = upload(
+        empty_backend_app(),
+        "holdings.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        bytes,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    // 3 metadata rows + header + 2 holdings + a "Total" row -- the "Total"
+    // row must be skipped, not counted as a third holding.
+    assert_eq!(body["row_count"], 2);
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn upstox_format_parses_correctly() {
+    // Upstox's own API field names (trading_symbol/quantity/average_price)
+    // and its CSV export's NSE: prefix on tickers, both in one test.
+    let csv =
+        "trading_symbol,quantity,average_price\nNSE:RELIANCE,10,2850.00\nNSE:HDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn groww_format_parses_correctly() {
+    let csv = "Symbol,Units,Average Buy Price\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn angel_one_format_parses_correctly() {
+    let csv = "Symbol,Net Quantity,Avg. Buy Price\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn hdfc_securities_format_parses_correctly() {
+    // "multiple title rows above header" -- metadata rows ahead of the
+    // real header, same scan logic as Zerodha's XLSX, now exercised for a
+    // CSV export too.
+    let csv = "HDFC Securities - Portfolio Holdings Report\nAs on: 02-Oct-2026\nSymbol,Quantity,Avg Rate\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn icici_direct_format_parses_correctly() {
+    // "report header rows above data" -- same metadata-row scan.
+    let csv = "ICICIdirect.com Portfolio Report\nGenerated: 02-Oct-2026\nStock Name,Quantity,Average Rate\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn five_paisa_format_parses_correctly() {
+    let csv = "Symbol,Qty,Avg Price\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn motilal_oswal_format_parses_correctly() {
+    let csv = "Scrip Name,Qty,Buy Avg Price\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+#[tokio::test]
+async fn kotak_securities_format_parses_correctly() {
+    let csv = "Scrip,Quantity,Average Price\nRELIANCE,10,2850.00\nHDFCBANK,25,1640.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_two_holding_portfolio(
+        &body,
+        "RELIANCE.NS",
+        10.0 * 2850.00,
+        "HDFCBANK.NS",
+        25.0 * 1640.00,
+    );
+}
+
+// --- Ticker normalisation / row filtering ---------------------------------
+
+#[tokio::test]
+async fn exchange_prefixed_ticker_is_normalised() {
+    let csv = "ticker,weight\nNSE:RELIANCE,0.6\nBSE/TCS,0.4\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert!(holdings.iter().any(|h| h["ticker"] == "RELIANCE.NS"));
+    assert!(holdings.iter().any(|h| h["ticker"] == "TCS.NS"));
+    let notes = body["tickers_normalised"].as_array().unwrap();
+    assert!(notes.iter().any(|n| n == "NSE:RELIANCE -> RELIANCE.NS"));
+    assert!(notes.iter().any(|n| n == "BSE/TCS -> TCS.NS"));
+}
+
+#[tokio::test]
+async fn eq_suffixed_ticker_is_normalised() {
+    let csv = "ticker,weight\nRELIANCE-EQ,0.6\nTCS.NS,0.4\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert!(holdings.iter().any(|h| h["ticker"] == "RELIANCE.NS"));
+    let notes = body["tickers_normalised"].as_array().unwrap();
+    assert!(notes.iter().any(|n| n == "RELIANCE-EQ -> RELIANCE.NS"));
+}
+
+#[tokio::test]
+async fn a_known_isin_is_converted_to_its_nse_symbol_not_kept_as_is() {
+    let csv = "ticker,weight\nINE002A01018,0.6\nTCS.NS,0.4\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert!(holdings.iter().any(|h| h["ticker"] == "RELIANCE.NS"));
+    assert!(!holdings.iter().any(|h| h["ticker"] == "INE002A01018"));
+    assert_eq!(body["isins_resolved"]["INE002A01018"], "RELIANCE.NS");
+}
+
+#[tokio::test]
+async fn a_total_row_is_skipped() {
+    let csv = "ticker,weight\nRELIANCE.NS,0.6\nTCS.NS,0.4\nTotal,1.0\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["row_count"], 2);
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert!(!holdings
+        .iter()
+        .any(|h| h["ticker"] == "Total" || h["ticker"] == "Total.NS"));
+}
+
+#[tokio::test]
+async fn a_row_with_an_empty_ticker_is_skipped() {
+    let csv = "ticker,weight\nRELIANCE.NS,0.7\n,0.1\nTCS.NS,0.3\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["row_count"], 2);
+}
+
+#[tokio::test]
+async fn zero_weight_holdings_are_dropped_and_counted() {
+    // A zero-quantity row survives row-filtering (it's not an empty/
+    // "Total"/placeholder ticker) but produces a 0.0 weight -- it must not
+    // appear in the returned holdings, and must be counted separately
+    // from `row_count` (which reflects the real, non-zero holdings only).
+    let csv = "ticker,shares,avg_price_inr\nRELIANCE.NS,10,2850.00\nHDFCBANK.NS,25,1640.00\nZEROCO.NS,0,500.00\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["skipped_zero_weight"], 1);
+    assert_eq!(body["row_count"], 2);
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert_eq!(holdings.len(), 2);
+    assert!(!holdings.iter().any(|h| h["ticker"] == "ZEROCO.NS"));
+}
+
+#[tokio::test]
+async fn total_value_inr_is_rounded_to_2dp_in_the_response() {
+    // 10 * 2850.333 + 25 * 1640.111 = 28503.33 + 41002.775 = 69506.105,
+    // which must come back rounded to 69506.11 (or 69506.10 -- either is
+    // a valid 2dp rounding of the exact .105 midpoint), never the raw
+    // 3-decimal-place sum.
+    let csv = "ticker,shares,avg_price_inr\nRELIANCE.NS,10,2850.333\nHDFCBANK.NS,25,1640.111\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let total = body["portfolio"]["total_value_inr"].as_f64().unwrap();
+    let rounded_to_2dp = (total * 100.0).round() / 100.0;
+    assert_eq!(
+        total, rounded_to_2dp,
+        "total_value_inr {total} is not already rounded to 2dp"
+    );
+    assert!(
+        (total - 69506.11).abs() < 0.01 || (total - 69506.10).abs() < 0.01,
+        "got {total}"
+    );
+}
+
+#[tokio::test]
+async fn fewer_than_two_holdings_after_filtering_returns_422() {
+    // Only one real holding survives filtering (the other two rows are a
+    // blank ticker and a "Total" row) -- /portfolio/upload must reject
+    // this itself (422) rather than handing a single-holding portfolio to
+    // `validate_portfolio` (which would 400 instead).
+    let csv = "ticker,weight\nRELIANCE.NS,1.0\n,0.0\nTotal,1.0\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn broker_format_weights_sum_to_one_within_tolerance() {
+    let csv = "Symbol,Net Quantity,Avg. Buy Price\nRELIANCE,7,111.11\nHDFCBANK,13,222.22\nINFY,3,333.33\nTCS,9,77.77\nITC,1,999.99\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    let sum: f64 = holdings.iter().map(|h| h["weight"].as_f64().unwrap()).sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "weights should sum to 1.0 within 1e-6, got {sum}"
+    );
+}
+
+#[tokio::test]
+async fn unrecognised_columns_returns_the_improved_error_message() {
+    let csv = "foo,bar\nx,y\n";
+    let response = upload(
+        empty_backend_app(),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
-    assert_eq!(body["code"], "invalid_portfolio");
+    assert_eq!(body["code"], "unsupported_format");
+    let message = body["error"].as_str().unwrap();
+    assert!(message.contains("Could not parse portfolio file"));
+    assert!(message.contains("Columns found: [foo, bar]"));
+    assert!(message.contains("Could not identify: ticker column"));
+    assert!(message.contains("Zerodha"));
+    assert!(message.contains("Upstox"));
+    assert!(message.contains("Groww"));
+    assert!(message.contains("Angel One"));
+    assert!(message.contains("HDFC Securities"));
+    assert!(message.contains("ICICI Direct"));
+    assert!(message.contains("5Paisa"));
+    assert!(message.contains("Motilal Oswal"));
+    assert!(message.contains("Kotak Securities"));
+    assert_eq!(body["columns_found"], serde_json::json!(["foo", "bar"]));
+    assert_eq!(body["missing"], "ticker");
 }
 
 fn sample_risk_drift_trace(
@@ -1457,4 +2061,1075 @@ async fn experiment_with_an_attached_policy_runs_the_passive_check_and_returns_p
     assert_eq!(body["experiment"], "RiskDecomposition");
     assert_eq!(body["policy_result"]["all_passed"], false);
     assert_eq!(body["policy_result"]["breach_count"], 1);
+}
+
+// ---------------------------------------------------------------------
+// Upstox OAuth
+// ---------------------------------------------------------------------
+
+fn sample_nse_holding(symbol: &str, quantity: f64, average_price: f64) -> UpstoxHolding {
+    UpstoxHolding {
+        trading_symbol: symbol.to_string(),
+        exchange: "NSE_EQ".to_string(),
+        quantity,
+        average_price,
+    }
+}
+
+#[tokio::test]
+async fn upstox_status_returns_configured_true_when_env_is_set() {
+    let (app, _) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), true);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/upstox/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["configured"], true);
+}
+
+#[tokio::test]
+async fn upstox_status_returns_configured_false_when_env_is_absent() {
+    let (app, _) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), false);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/upstox/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["configured"], false);
+}
+
+#[tokio::test]
+async fn upstox_login_returns_302_with_location_containing_upstox_domain_and_state() {
+    let (app, _) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), true);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/upstox/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    // See the judgment-call note on `routes::get_upstox_login`: the spec's
+    // own URL construction (api.upstox.com) and its test description
+    // (accounts.upstox.com) disagree -- asserting the former, which is
+    // what the handler actually redirects to.
+    assert!(
+        location.contains("api.upstox.com"),
+        "location was {location:?}"
+    );
+    assert!(location.contains("state="), "location was {location:?}");
+}
+
+#[tokio::test]
+async fn upstox_login_returns_503_when_not_configured() {
+    let (app, _) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), false);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/upstox/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "not_configured");
+}
+
+#[tokio::test]
+async fn upstox_callback_with_invalid_state_returns_400() {
+    let (app, _) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), true);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/upstox/callback?code=some-code&state=not-a-real-state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid or expired OAuth state"));
+}
+
+#[tokio::test]
+async fn upstox_callback_with_expired_state_returns_400() {
+    let (app, state_map) = app_with_upstox(Arc::new(MockUpstoxClient::unused()), true);
+    let expired_state = "expired-state-id".to_string();
+    state_map.lock().unwrap().insert(
+        expired_state.clone(),
+        Instant::now() - Duration::from_secs(601),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/upstox/callback?code=some-code&state={expired_state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn upstox_callback_with_valid_state_and_mocked_holdings_returns_200_with_portfolio() {
+    let upstox_client = MockUpstoxClient {
+        token_result: Ok("mock-access-token".to_string()),
+        holdings_result: Ok(vec![
+            sample_nse_holding("RELIANCE", 10.0, 2500.0),
+            sample_nse_holding("TCS", 5.0, 3800.0),
+        ]),
+    };
+    let (app, state_map) = app_with_upstox(Arc::new(upstox_client), true);
+    let state = "valid-state-id".to_string();
+    state_map
+        .lock()
+        .unwrap()
+        .insert(state.clone(), Instant::now());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/upstox/callback?code=some-code&state={state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["holdings_count"], 2);
+    assert!(!body["data_as_of"].as_str().unwrap().is_empty());
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    assert_eq!(holdings.len(), 2);
+    assert!(holdings.iter().any(|h| h["ticker"] == "RELIANCE.NS"));
+    assert!(holdings.iter().any(|h| h["ticker"] == "TCS.NS"));
+}
+
+#[tokio::test]
+async fn upstox_callback_with_fewer_than_two_nse_eq_holdings_returns_422() {
+    let upstox_client = MockUpstoxClient {
+        token_result: Ok("mock-access-token".to_string()),
+        holdings_result: Ok(vec![sample_nse_holding("RELIANCE", 10.0, 2500.0)]),
+    };
+    let (app, state_map) = app_with_upstox(Arc::new(upstox_client), true);
+    let state = "valid-state-id".to_string();
+    state_map
+        .lock()
+        .unwrap()
+        .insert(state.clone(), Instant::now());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/upstox/callback?code=some-code&state={state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "upstox_error");
+}
+
+#[tokio::test]
+async fn upstox_callback_surfaces_token_exchange_failure_as_502() {
+    let upstox_client = MockUpstoxClient {
+        token_result: Err("invalid_grant: authorization code has expired".to_string()),
+        holdings_result: Err("unused".to_string()),
+    };
+    let (app, state_map) = app_with_upstox(Arc::new(upstox_client), true);
+    let state = "valid-state-id".to_string();
+    state_map
+        .lock()
+        .unwrap()
+        .insert(state.clone(), Instant::now());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/upstox/callback?code=some-code&state={state}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["error"],
+        "invalid_grant: authorization code has expired"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Production-hardening tests: concurrency limiter, error mapping/shape,
+// health, ISIN upload rejection.
+// ---------------------------------------------------------------------
+
+fn empty_mock() -> MockBackend {
+    MockBackend {
+        experiment_result: None,
+        experiment_error: None,
+        ask_result: None,
+        received_conversation_history: Mutex::new(None),
+        received_policy: Mutex::new(None),
+    }
+}
+
+fn experiment_request(
+    app: axum::Router,
+) -> impl std::future::Future<Output = axum::response::Response> {
+    let body = serde_json::json!({
+        "portfolio": sample_portfolio(),
+        "experiment": {"type": "RiskDecomposition"},
+    });
+    async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/experiment")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+}
+
+fn is_json(response: &axum::response::Response) -> bool {
+    response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"))
+}
+
+async fn assert_error_body(
+    response: axum::response::Response,
+    status: StatusCode,
+    code: &str,
+) -> serde_json::Value {
+    assert_eq!(response.status(), status);
+    assert!(is_json(&response), "error response must be JSON");
+    let body = body_json(response).await;
+    assert_eq!(body["code"], code, "{body}");
+    assert!(
+        body["error"].as_str().is_some_and(|m| !m.is_empty()),
+        "{body}"
+    );
+    body
+}
+
+/// Answers `/ask` only once `gate` has a permit, counting how many
+/// requests are inside the backend at once.
+struct GatedBackend {
+    inner: MockBackend,
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Backend for GatedBackend {
+    async fn run_experiment(
+        &self,
+        e: Experiment,
+        p: Portfolio,
+        policy: Option<compute::policy::RiskPolicy>,
+    ) -> Result<EvidenceTrace, BackendError> {
+        self.inner.run_experiment(e, p, policy).await
+    }
+
+    async fn run_ask(
+        &self,
+        p: Portfolio,
+        m: String,
+        h: Vec<agent::ConversationTurn>,
+        policy: Option<compute::policy::RiskPolicy>,
+    ) -> Result<agent::pipeline::PipelineResult, BackendError> {
+        self.entered
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.gate.acquire().await.unwrap().forget();
+        let mut result = self.inner.run_ask(p, m, h, policy).await?;
+        // The store keys snapshots by trace id, so concurrent asks sharing
+        // one canned result need distinct ids to all persist.
+        result.trace.id = uuid::Uuid::new_v4().to_string();
+        result.execution_trace.id = uuid::Uuid::new_v4().to_string();
+        Ok(result)
+    }
+}
+
+fn sample_pipeline_result() -> agent::pipeline::PipelineResult {
+    agent::pipeline::PipelineResult {
+        experiment: Experiment::RiskDecomposition(RiskDecompositionInput {
+            portfolio: sample_portfolio(),
+            frequency: Frequency::Daily,
+            window: None,
+        }),
+        trace: sample_trace(),
+        traces: vec![sample_trace()],
+        tool_plans: vec![],
+        narration: agent::grounding::GroundedNarration {
+            narration: "Vol is 15.5% annualised.".to_string(),
+            grounding_warnings: vec![],
+            ..Default::default()
+        },
+        assistant_turn: agent::ConversationTurn::assistant("Vol is 15.5% annualised."),
+        suggestion: "Reduce turnover?".to_string(),
+        execution_trace: sample_execution_trace(),
+    }
+}
+
+#[tokio::test]
+async fn nine_concurrent_asks_eight_proceed_and_one_gets_503_service_busy() {
+    use std::sync::atomic::Ordering;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let backend = GatedBackend {
+        inner: MockBackend {
+            ask_result: Some(sample_pipeline_result()),
+            ..empty_mock()
+        },
+        gate: gate.clone(),
+        entered: entered.clone(),
+    };
+    let app = build_router(AppState {
+        backend: Arc::new(backend),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(300),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
+    });
+    let ask = |app: axum::Router| {
+        let body = serde_json::json!({"portfolio": sample_portfolio(), "message": "risk?"});
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ask")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let mut handles: Vec<_> = (0..8).map(|_| tokio::spawn(ask(app.clone()))).collect();
+    while entered.load(Ordering::SeqCst) < 8 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // All 8 permits are held, so the 9th waits out the queue timeout.
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(health).await["active_requests"], 8);
+    let ninth = ask(app.clone()).await;
+    let retry_after = ninth.headers().get("retry-after").cloned();
+    let body = assert_error_body(ninth, StatusCode::SERVICE_UNAVAILABLE, "service_busy").await;
+    assert_eq!(body["retry_after_seconds"], 30);
+    assert_eq!(body["error"], crate::error::MSG_SERVICE_BUSY);
+    assert_eq!(retry_after.unwrap(), "30");
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        8,
+        "the 9th must never reach the backend"
+    );
+
+    gate.add_permits(8);
+    for h in handles.drain(..) {
+        assert_eq!(h.await.unwrap().status(), StatusCode::OK);
+    }
+    // Permits are released: a new ask goes through, and health is idle again.
+    gate.add_permits(1);
+    assert_eq!(ask(app.clone()).await.status(), StatusCode::OK);
+    let health = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(health).await["active_requests"], 0);
+}
+
+#[tokio::test]
+async fn health_reports_capacity_activity_and_integration_status() {
+    let response = app_with_backend(empty_mock())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["gemini"], "configured");
+    assert_eq!(body["upstox"], "not_configured");
+    assert_eq!(body["active_requests"], 0);
+    assert_eq!(body["capacity"], 8);
+}
+
+#[tokio::test]
+async fn data_unavailable_maps_to_503_with_the_user_message() {
+    let app = app_with_backend(MockBackend {
+        experiment_error: Some(BackendError::DataUnavailable(
+            "Market data temporarily unavailable. Please try again in a moment.".to_string(),
+        )),
+        ..empty_mock()
+    });
+    let body = assert_error_body(
+        experiment_request(app).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "data_unavailable",
+    )
+    .await;
+    assert_eq!(
+        body["error"],
+        "Market data is temporarily unavailable. Please try again in a moment."
+    );
+}
+
+#[tokio::test]
+async fn gemini_unavailable_maps_to_503_ai_unavailable_without_leaking_detail() {
+    let app = app_with_backend(MockBackend {
+        experiment_error: Some(BackendError::GeminiUnavailable(
+            "status 503 body {secret}".to_string(),
+        )),
+        ..empty_mock()
+    });
+    let body = assert_error_body(
+        experiment_request(app).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "ai_unavailable",
+    )
+    .await;
+    assert_eq!(
+        body["error"],
+        "The AI service is temporarily busy. Please try again in a moment."
+    );
+}
+
+#[tokio::test]
+async fn internal_and_compute_errors_return_a_generic_500_message() {
+    for err in [
+        BackendError::Internal("thread 'x' panicked at src/foo.rs:1".to_string()),
+        BackendError::Compute("nalgebra: singular matrix".to_string()),
+    ] {
+        let app = app_with_backend(MockBackend {
+            experiment_error: Some(err),
+            ..empty_mock()
+        });
+        let response = experiment_request(app).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"],
+            "Something went wrong on our end. Please try again."
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_isin_holding_surfaces_as_422_unresolved_ticker_with_the_isin_message() {
+    let err: BackendError = compute::ticker_map::isin_error("INE672A01026").into();
+    let app = app_with_backend(MockBackend {
+        experiment_error: Some(err),
+        ..empty_mock()
+    });
+    let body = assert_error_body(
+        experiment_request(app).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unresolved_ticker",
+    )
+    .await;
+    let msg = body["error"].as_str().unwrap();
+    assert!(
+        msg.contains("ISIN codes (INE672A01026)") && msg.contains("RELIANCE.NS"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn insufficient_data_maps_to_422_insufficient_data() {
+    let err: BackendError =
+        compute::ComputeError::InsufficientData("FOO.NS has only 20 observations".to_string())
+            .into();
+    let app = app_with_backend(MockBackend {
+        experiment_error: Some(err),
+        ..empty_mock()
+    });
+    assert_error_body(
+        experiment_request(app).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "insufficient_data",
+    )
+    .await;
+}
+
+/// A stub Yahoo search endpoint: `answer(isin)` gives `(status, quotes)`,
+/// each quote `(symbol, exchange, quoteType)`.
+fn yahoo_stub(
+    answer: impl Fn(&str) -> (u16, Vec<(&'static str, &'static str, &'static str)>) + Send + 'static,
+) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/v1/finance/search",
+        listener.local_addr().unwrap()
+    );
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { return };
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let isin = head
+                .split("q=")
+                .nth(1)
+                .and_then(|s| s.split(['&', ' ']).next())
+                .unwrap_or("")
+                .to_string();
+            let (status, quotes) = answer(&isin);
+            let items: Vec<String> = quotes
+                .iter()
+                .map(|(s, e, t)| {
+                    format!(r#"{{"symbol":"{s}","exchange":"{e}","quoteType":"{t}"}}"#)
+                })
+                .collect();
+            let body = format!(r#"{{"quotes":[{}]}}"#, items.join(","));
+            let _ = write!(
+                conn,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+fn fast_isin_config() -> compute::isin::ResolverConfig {
+    use std::time::Duration;
+    compute::isin::ResolverConfig {
+        first_timeout: Duration::from_millis(500),
+        retry_timeout: Duration::from_millis(800),
+        rate_limit_wait: Duration::from_millis(50),
+        batch_gap: Duration::from_millis(10),
+        ..Default::default()
+    }
+}
+
+fn app_with_isin_url(url: String) -> axum::Router {
+    build_router(AppState {
+        backend: Arc::new(empty_mock()),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: url,
+            ..fast_isin_config()
+        },
+    })
+}
+
+const NO_QUOTES: (u16, Vec<(&str, &str, &str)>) = (200, Vec::new());
+
+#[tokio::test]
+async fn kotak_style_isin_upload_resolves_skips_and_renormalizes() {
+    let url = yahoo_stub(|isin| match isin {
+        "INE263A01024" => (200, vec![("BEL.NS", "NSI", "EQUITY")]),
+        "INF000000012" => (200, vec![("0P0001.BO", "BSE", "MUTUALFUND")]),
+        _ => NO_QUOTES, // INE999X99999: unknown
+    });
+    let csv = "Stock Name,ISIN,Quantity,Average buy price\n\
+               RELIANCE INDUSTRIES,INE002A01018,10,1000\n\
+               HDFC BANK,INE040A01034,10,1000\n\
+               BHARAT ELECTRONICS LTD,INE263A01024,10,1000\n\
+               SOME FUND,INF000000012,10,1000\n\
+               GONE CO,INE999X99999,10,1000\n";
+    let response = upload(
+        app_with_isin_url(url),
+        "holdings.csv",
+        "text/csv",
+        csv.as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["layout_detected"], "value");
+    assert_eq!(
+        body["isins_resolved"],
+        serde_json::json!({"INE002A01018": "RELIANCE.NS", "INE040A01034": "HDFCBANK.NS", "INE263A01024": "BEL.NS"})
+    );
+    let skipped = body["isins_skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 2);
+    assert_eq!(skipped[0]["isin"], "INF000000012");
+    assert_eq!(skipped[0]["category"], "non_equity");
+    assert!(skipped[0]["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("Mutual fund units cannot be analysed"));
+    assert_eq!(skipped[1]["isin"], "INE999X99999");
+    assert_eq!(skipped[1]["category"], "not_found");
+
+    assert_eq!(body["weights_renormalized"], true);
+    assert_eq!(body["original_holding_count"], 5);
+    assert_eq!(body["retained_holding_count"], 3);
+    assert_eq!(body["row_count"], 5);
+    let holdings = body["portfolio"]["holdings"].as_array().unwrap();
+    let tickers: Vec<&str> = holdings
+        .iter()
+        .map(|h| h["ticker"].as_str().unwrap())
+        .collect();
+    assert_eq!(tickers, vec!["RELIANCE.NS", "HDFCBANK.NS", "BEL.NS"]);
+    // Equal values, so equal weights; the total is the retained value only.
+    assert_eq!(body["portfolio"]["total_value_inr"], 30000.0);
+    let weight_sum: f64 = holdings.iter().map(|h| h["weight"].as_f64().unwrap()).sum();
+    assert!((weight_sum - 1.0).abs() < 1e-5, "{weight_sum}");
+}
+
+#[tokio::test]
+async fn an_all_isin_file_resolves_without_skips() {
+    let url = yahoo_stub(|_| NO_QUOTES); // both ISINs are cached: must not matter
+    let csv = "ISIN,Quantity,Average buy price\nINE002A01018,10,1000\nINE040A01034,30,1000\n";
+    let response = upload(app_with_isin_url(url), "k.csv", "text/csv", csv.as_bytes()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["isins_resolved"].as_object().unwrap().len(), 2);
+    assert_eq!(body["isins_skipped"], serde_json::json!([]));
+    assert_eq!(body["weights_renormalized"], false);
+    assert_eq!(body["original_holding_count"], 2);
+    assert_eq!(body["retained_holding_count"], 2);
+    assert_eq!(body["portfolio"]["total_value_inr"], 40000.0);
+    assert_eq!(body["portfolio"]["holdings"][1]["weight"], 0.75);
+}
+
+#[tokio::test]
+async fn upload_mixing_isins_and_nse_symbols_resolves_both() {
+    let url = yahoo_stub(|_| NO_QUOTES);
+    let csv = "ticker,weight\nINE002A01018,0.5\nTCS,0.3\nINFY.NS,0.2\n";
+    let response = upload(app_with_isin_url(url), "p.csv", "text/csv", csv.as_bytes()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let tickers: Vec<&str> = body["portfolio"]["holdings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["ticker"].as_str().unwrap())
+        .collect();
+    assert_eq!(tickers, vec!["RELIANCE.NS", "TCS.NS", "INFY.NS"]);
+    assert_eq!(
+        body["isins_resolved"],
+        serde_json::json!({"INE002A01018": "RELIANCE.NS"})
+    );
+    assert_eq!(body["isins_skipped"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn a_symbol_file_has_empty_isin_fields_and_never_calls_yahoo() {
+    // The URL is unreachable: any lookup attempt would fail the upload.
+    let csv = "ticker,weight\nRELIANCE.NS,0.6\nTCS.NS,0.4\n";
+    let response = upload(empty_backend_app(), "p.csv", "text/csv", csv.as_bytes()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["isins_resolved"], serde_json::json!({}));
+    assert_eq!(body["isins_skipped"], serde_json::json!([]));
+    assert_eq!(body["weights_renormalized"], false);
+    assert_eq!(body["retained_holding_count"], 2);
+}
+
+#[tokio::test]
+async fn only_one_resolving_isin_is_422_insufficient_holdings_with_reasons() {
+    let url = yahoo_stub(|isin| match isin {
+        "INE342T07379" => NO_QUOTES, // debenture by ISIN structure
+        _ => NO_QUOTES,
+    });
+    let csv = "ticker,weight\nINE002A01018,0.5\nINE342T07379,0.3\nINE999X99999,0.2\n";
+    let response = upload(app_with_isin_url(url), "p.csv", "text/csv", csv.as_bytes()).await;
+
+    let body = assert_error_body(
+        response,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "insufficient_holdings",
+    )
+    .await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Bonds and debentures"),
+        "{body}"
+    );
+    assert_eq!(body["isins_skipped"].as_array().unwrap().len(), 2);
+    assert_eq!(body["isins_skipped"][0]["category"], "non_equity");
+}
+
+#[tokio::test]
+async fn an_upload_where_every_isin_fails_is_a_descriptive_422() {
+    let url = yahoo_stub(|_| NO_QUOTES);
+    let csv = "ticker,weight\nINE999X99991,0.5\nINE999X99992,0.5\n";
+    let response = upload(app_with_isin_url(url), "p.csv", "text/csv", csv.as_bytes()).await;
+    let body = assert_error_body(
+        response,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "insufficient_holdings",
+    )
+    .await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Could not identify this security"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn yahoo_being_down_is_503_data_unavailable_not_a_blame_the_file_error() {
+    let url = yahoo_stub(|_| (503, Vec::new()));
+    let csv = "ticker,weight\nINE999X99991,0.5\nINE999X99992,0.5\n";
+    let response = upload(app_with_isin_url(url), "p.csv", "text/csv", csv.as_bytes()).await;
+    assert_error_body(
+        response,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "data_unavailable",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn framework_level_errors_still_return_json_bodies() {
+    let app = app_with_backend(empty_mock());
+    // 405: wrong method on a real route (axum's own response has no body).
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ask")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_error_body(r, StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed").await;
+    // Malformed JSON.
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ask")
+                .header("content-type", "application/json")
+                .body(Body::from("{not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(is_json(&r));
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    // Missing content type.
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ask")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(is_json(&r));
+    // Query-string extractor rejection (a non-JSON plain-text axum body).
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/drift")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error());
+    assert!(is_json(&r));
+    // Unknown report id.
+    let r = app
+        .oneshot(
+            Request::builder()
+                .uri("/report/nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_error_body(r, StatusCode::NOT_FOUND, "result_not_found").await;
+}
+
+// ---------------------------------------------------------------------
+// is_redirect: out-of-scope questions answer 200, not 422
+// ---------------------------------------------------------------------
+
+/// A backend whose `/ask` is always declined by the planner.
+struct DecliningBackend(String);
+
+#[async_trait::async_trait]
+impl Backend for DecliningBackend {
+    async fn run_experiment(
+        &self,
+        _e: Experiment,
+        _p: Portfolio,
+        _policy: Option<compute::policy::RiskPolicy>,
+    ) -> Result<EvidenceTrace, BackendError> {
+        Err(BackendError::Internal("unused".to_string()))
+    }
+
+    async fn run_ask(
+        &self,
+        _p: Portfolio,
+        _m: String,
+        _h: Vec<agent::ConversationTurn>,
+        _policy: Option<compute::policy::RiskPolicy>,
+    ) -> Result<agent::pipeline::PipelineResult, BackendError> {
+        Err(BackendError::Redirect(self.0.clone()))
+    }
+}
+
+fn ask_request(
+    app: axum::Router,
+    message: &str,
+) -> impl std::future::Future<Output = axum::response::Response> {
+    let body = serde_json::json!({"portfolio": sample_portfolio(), "message": message});
+    async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ask")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_declined_question_is_http_200_with_is_redirect_true_and_nulls_for_the_experiment_fields()
+{
+    let redirect = "I cannot model individual stock price movements. Which would be most useful?";
+    let app = build_router(AppState {
+        backend: Arc::new(DecliningBackend(redirect.to_string())),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig::default(),
+    });
+    let response = ask_request(app, "What if Ratnaveer increases 10%?").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["is_redirect"], true);
+    assert_eq!(body["narration"], redirect);
+    assert_eq!(body["assistant_turn"]["role"], "assistant");
+    assert_eq!(body["assistant_turn"]["content"], redirect);
+    assert!(
+        body["suggestion"].as_str().is_some_and(|s| !s.is_empty()),
+        "the chip is still offered"
+    );
+    assert_eq!(body["grounding_warnings"], serde_json::json!([]));
+    for null_field in [
+        "experiment",
+        "trace",
+        "result_id",
+        "agent_execution_trace",
+        "visualization",
+    ] {
+        assert!(
+            body[null_field].is_null(),
+            "{null_field} should be null: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_normal_ask_has_is_redirect_false() {
+    let app = app_with_backend(MockBackend {
+        ask_result: Some(sample_pipeline_result()),
+        ..empty_mock()
+    });
+    let response = ask_request(app, "risk?").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["is_redirect"], false);
+    assert!(body["trace"].is_object() && body["result_id"].is_string());
+}
+
+#[tokio::test]
+async fn empty_or_whitespace_message_is_400_empty_message_before_the_backend_runs() {
+    for msg in ["", "   ", "\n\t"] {
+        let backend = MockBackend {
+            ask_result: Some(sample_pipeline_result()),
+            ..empty_mock()
+        };
+        let response = ask_request(app_with_backend(backend), msg).await;
+        let body = assert_error_body(response, StatusCode::BAD_REQUEST, "empty_message").await;
+        assert_eq!(body["error"], "Message cannot be empty.");
+    }
+}
+
+#[tokio::test]
+async fn the_backend_is_never_called_for_an_empty_message() {
+    let backend = Arc::new(MockBackend {
+        ask_result: Some(sample_pipeline_result()),
+        ..empty_mock()
+    });
+    let app = build_router(AppState {
+        backend: backend.clone(),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: true,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig::default(),
+    });
+    let _ = ask_request(app, "").await;
+    assert!(
+        backend
+            .received_conversation_history
+            .lock()
+            .unwrap()
+            .is_none(),
+        "run_ask must not have been called"
+    );
+}
+
+#[tokio::test]
+async fn ask_without_gemini_key_returns_503_ai_not_configured() {
+    let app = build_router(AppState {
+        backend: Arc::new(empty_mock()),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: false,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
+    });
+    let req_body = serde_json::json!({"portfolio": sample_portfolio(), "message": "risk?"});
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ask")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "ai_not_configured");
+    assert!(body["error"].as_str().unwrap().contains("GEMINI_API_KEY"));
 }

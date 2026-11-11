@@ -28,6 +28,8 @@ fn sample_regime_state(idx: u8, label: &'static str, probs: [f64; 3]) -> RegimeS
         log_likelihood: -1.0,
         n_iter: 5,
         smoothing_note: "full-history smoothed, not suitable for live trading signals",
+        transition_matrix: [[0.0; 3]; 3],
+        regime_forecast: vec![],
     }
 }
 
@@ -37,6 +39,20 @@ fn sample_data_window() -> DataWindow {
         window_periods: 252,
         start: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
         end: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+    }
+}
+
+fn sample_garch_forecast() -> compute::garch::GarchForecast {
+    compute::garch::GarchForecast {
+        omega: 1e-6,
+        alpha: 0.05,
+        beta: 0.90,
+        persistence: 0.95,
+        long_run_vol_annualized: 0.15,
+        current_vol_annualized: 0.15,
+        forecasts: vec![],
+        converged: true,
+        log_likelihood: 0.0,
     }
 }
 
@@ -85,6 +101,7 @@ fn risk_decomposition_result(
             factor_names,
             rows: vec![vec![1.0, 0.1], vec![0.1, 1.0]],
         },
+        garch_forecast: sample_garch_forecast(),
     };
     let mut data_window = sample_data_window();
     data_window.end = end_date;
@@ -104,6 +121,7 @@ fn risk_decomposition_result(
             regime_state: Some(regime),
             regime_fallback_warnings: vec![],
             cap_source: None,
+            short_history_tickers: vec![],
         },
         outputs: serde_json::json!({ "result": output }),
         invariants: vec![],
@@ -113,6 +131,7 @@ fn risk_decomposition_result(
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     };
     (output, trace)
 }

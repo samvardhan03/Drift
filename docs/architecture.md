@@ -1,65 +1,62 @@
 # Architecture
 
-## Crate map
+## Crates
 
-```
-crates/
-  compute/   Pure Rust analytics — no I/O in the hot path
-  agent/     NL→Experiment→EvidenceTrace→narration (Gemini)
-  server/    axum HTTP API + embedded SPA
-  store/     SQLite snapshot store (rusqlite bundled)
-```
+| Crate | Responsibility | Key modules |
+|---|---|---|
+| `compute` | Market data, models and experiments. Pure Rust, no AI. | `data` (Yahoo fetch, cache, NSE calendar alignment) · `ticker_map`, `isin` (symbol/ISIN resolution) · `model` (OLS factor fits, Ledoit–Wolf covariance, regime-conditional covariance) · `regime` (3-state Gaussian HMM) · `garch` (GARCH(1,1) forecast) · `experiments`, `cvar`, `drift`, `reverse_stress`, `policy`, `performance` · `scenarios` · `portfolio_history` · `trace` (`EvidenceTrace`) · `dispatch` (single entry point) |
+| `agent` | Natural language in, grounded narration out. | `orchestrator` (NL → tool plan) · `parse`, `schema` (function declarations) · `narrate` · `grounding` (numeric check + retry) · `direction` (directional/recommendation checks) · `suggest` (follow-up question) · `pipeline` · `gemini` (HTTP client with retries) |
+| `server` | HTTP surface. | `routes` · `upload` (9 broker formats, CSV/XLSX) · `upstox` (OAuth import) · `visualization` (chart data) · `pdf` · `backend` (`RealBackend`, `NoAiBackend`) · `error`, `validate`, `logging` · embedded UI in `static/index.html` |
+| `store` | Persistence. | SQLite (bundled `rusqlite`) snapshots and agent execution traces |
 
 ## Request lifecycle
 
 ```
 POST /experiment
-  │
-  ├─ validate: Portfolio (tickers, weights, weights sum to 1)
-  ├─ deserialise: Experiment enum
-  │
-  ├─ compute::dispatch::run_experiment
-  │     ├─ fetch: Yahoo Finance OHLCV (cached CSV, NSE-calendar aligned)
-  │     ├─ fit:   OLS factor model, Ledoit-Wolf covariance, 3-state HMM regime
-  │     └─ run:   FactorShock / RiskDecomposition / CvarRebalance / RiskDrift /
-  │               ReverseStress / PolicyCheck
-  │
-  └─ EvidenceTrace (every number traceable to inputs)
-       ├─ stored in SnapshotStore (for /drift baseline diffs)
-       └─ returned as JSON  (or rendered to PDF via /report/:id)
+  validate portfolio (≥2 holdings, weights)
+  └─ compute::dispatch::run_experiment
+       ├─ resolve tickers → fetch / load cached prices → align to NSE calendar
+       ├─ fit factor model + HMM regime (+ GARCH forecast for RiskDecomposition)
+       ├─ run the experiment, attach passive policy check if a policy was given
+       └─ EvidenceTrace ──► stored in SQLite ──► JSON response
+                                            └─► GET /report/:id renders PDF
 
-POST /ask  (requires GEMINI_API_KEY)
-  │
-  ├─ agent::parse      NL → Experiment (Gemini function-calling)
-  ├─ compute::dispatch (same path as /experiment above)
-  ├─ agent::narrate    EvidenceTrace → plain English (Gemini)
-  ├─ agent::grounding  verbatim-number check (retry if mismatch)
-  └─ agent::suggest    proactive follow-up question
+POST /ask   (GEMINI_API_KEY required)
+  agent::orchestrator   NL + conversation history → plan of 1..n tools
+  compute::dispatch     run each planned experiment (same path as above)
+  agent::narrate        narrate trace values only
+  agent::grounding      every quoted number must exist in a trace → retry if not
+  agent::direction      flag backwards descriptions / ungrounded recommendations
+  agent::suggest        one follow-up question
+  server::visualization chart data (portfolio history first)
+  └─ answer + traces + charts + execution trace (GET /execution-trace/:id)
 ```
+
+## Operational behaviour
+
+- **Compute-only mode:** without `GEMINI_API_KEY`, `NoAiBackend` serves every compute route; `/ask` returns `503`.
+- **Concurrency:** `/ask` requests go through a semaphore with a queue timeout; `/health` reports `active_requests` and `capacity`.
+- **Cache warmup:** shortly after startup, common NSE large caps and the factor series are fetched into `data/cache/`; failures are logged, never fatal.
+- **Errors:** every error is JSON `{ "error", "code" }`, including framework-level rejections.
 
 ## Evidence trace
 
-Every experiment returns an `EvidenceTrace` — a structured JSON object that records:
+An `EvidenceTrace` contains `inputs`, `data_window`, `data_as_of`, `data_quality`, `model_params`, `outputs`, `invariants`, provenance for scenarios, parent trace ids for multi-step answers, and an optional `policy_result`. It is the contract between `compute`, `agent`, the PDF renderer and any client.
 
-- the raw input (tickers, weights, dates)
-- intermediate computed values (factor scores, regime state, covariance matrix)
-- the final result (risk attribution, optimised weights, stress P&L)
-
-The AI narration step is **verified**: before the narration reaches the user, the grounding check confirms that every number mentioned in the text appears verbatim in the trace. If it does not, Gemini is re-prompted (up to 2 retries).
-
-## Open vs. proprietary boundary
+## Open core and Drift Engine
 
 ```mermaid
 graph LR
-    subgraph open["Open (this repo, MIT)"]
-        A[crates/compute] --> B[crates/agent]
-        B --> C[crates/server]
-        D[crates/store] --> C
+    subgraph open["Open (this repository)"]
+        C[compute] --> A[agent]
+        A --> S[server]
+        C --> S
+        D[store] --> S
     end
     subgraph closed["Drift Engine (proprietary, hosted)"]
-        E["Multi-scale path-stability features<br/>Regime-aware factor blending<br/>Walk-forward validation with deflated Sharpe<br/>(not included)"]
+        E["Multi-scale path-stability features<br/>Regime-aware factor blending<br/>Lookahead-safe walk-forward validation with deflated Sharpe"]
     end
-    C -->|optional HTTP client| closed
+    S -.->|hosted access| closed
 ```
 
-The `compute` crate uses Yahoo Finance for market data. The Drift Engine (not in this repo) provides additional alpha features available via the hosted service.
+The Drift Engine is not included in this repository and no part of its implementation is described here.
