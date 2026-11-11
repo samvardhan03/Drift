@@ -3096,3 +3096,40 @@ async fn the_backend_is_never_called_for_an_empty_message() {
         "run_ask must not have been called"
     );
 }
+
+#[tokio::test]
+async fn ask_without_gemini_key_returns_503_ai_not_configured() {
+    let app = build_router(AppState {
+        backend: Arc::new(empty_mock()),
+        store: Arc::new(store::SnapshotStore::open(":memory:").unwrap()),
+        upstox_config: unconfigured_upstox_config(),
+        upstox_client: Arc::new(MockUpstoxClient::unused()),
+        upstox_state_map: Arc::new(Mutex::new(HashMap::new())),
+        semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+        capacity: 8,
+        ask_queue_timeout: std::time::Duration::from_millis(200),
+        gemini_configured: false,
+        isin_client: reqwest::Client::new(),
+        isin_config: compute::isin::ResolverConfig {
+            search_url: "http://127.0.0.1:1/unreachable".to_string(),
+            ..fast_isin_config()
+        },
+    });
+    let req_body = serde_json::json!({"portfolio": sample_portfolio(), "message": "risk?"});
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ask")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "ai_not_configured");
+    assert!(body["error"].as_str().unwrap().contains("GEMINI_API_KEY"));
+}

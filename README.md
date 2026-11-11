@@ -5,7 +5,7 @@
 [![CI](https://github.com/samvardhan03/Drift/actions/workflows/ci.yml/badge.svg)](https://github.com/samvardhan03/Drift/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.90-orange.svg)](rust-toolchain.toml)
-[![Tests](https://img.shields.io/badge/tests-325%20passing-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-326%20passing-green.svg)](#development)
 
 Drift takes an Indian equity portfolio — typed in, uploaded straight from your broker's holdings export, or imported from Upstox — and answers the questions a risk desk asks: *where is my risk concentrated, what happens if the market falls 12% and crude rises 20%, what would a repeat of IL&FS cost me, and what weights would cut my tail risk?* Every answer is an `EvidenceTrace`: the inputs, data window, fitted model parameters, invariants checked, and outputs — so any number can be traced back to the prices that produced it. Ask in plain English and an AI narrates the result, but only after every figure it quotes has been checked against the trace.
 
@@ -30,7 +30,7 @@ Or with Docker:
 docker build -t drift . && docker run -p 8080:8080 drift
 ```
 
-Without `GEMINI_API_KEY` the server runs in **compute-only mode**: the UI, `/experiment`, scenarios, broker uploads and PDF reports all work; `/ask` (natural language) returns `503`. Add a free key from [Google AI Studio](https://aistudio.google.com/) to turn on narration:
+Without `GEMINI_API_KEY` the server runs in **compute-only mode**: `/experiment`, `/scenarios`, broker uploads, stored traces and PDF reports all work over the API, and the CLI runs experiments offline. The built-in UI is conversational, so its Ask box and scenario buttons need the key (without it they explain that), and `/ask` returns `503 ai_not_configured`. Add a free key from [Google AI Studio](https://aistudio.google.com/) to turn on narration:
 
 ```bash
 export GEMINI_API_KEY=...   # in your shell — never commit it
@@ -60,9 +60,9 @@ cargo run -p server --release
 | Experiment | Question it answers |
 |---|---|
 | `FactorShock` | What happens to my portfolio if MARKET / USDINR / BRENT / GOLD_USD / RATES_PROXY move by X%? |
-| `RiskDecomposition` | Which factors and which holdings drive my volatility? |
+| `RiskDecomposition` | Which factors and which holdings drive my volatility — plus a GARCH(1,1) volatility forecast. |
 | `CvarRebalance` | What weights minimise tail loss (CVaR, Rockafellar–Uryasev LP) under my position caps? |
-| `PortfolioPerformance` | Realised returns, volatility, drawdown — plus a GARCH(1,1) volatility forecast. |
+| `PortfolioPerformance` | Realised and annualised return, volatility, max drawdown, best/worst period, and the current regime. |
 | `RiskDrift` | What changed in my risk since the last snapshot, and why? |
 | `ReverseStress` | What is the smallest shock that breaches my loss limit? |
 | `PolicyCheck` | Does this portfolio violate my risk policy (position, volatility, factor-concentration, turnover and scenario-loss limits)? |
@@ -191,7 +191,7 @@ Deployment recipes (Docker, Cloud Run, Fly.io): [docs/deploy.md](docs/deploy.md)
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace      # 325 passing, 4 ignored (need live network)
+cargo test --workspace      # 326 passing, 4 ignored (need live network)
 ```
 
 Tests use synthetic data and a mocked Gemini client, so they run offline. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [FAQ](docs/faq.md).

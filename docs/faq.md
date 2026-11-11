@@ -1,10 +1,13 @@
 # FAQ
 
 **Do I need a Gemini API key?**
-No. Without `GEMINI_API_KEY` the server starts in compute-only mode: the UI, `POST /experiment`, `GET /scenarios`, portfolio uploads and PDF reports all work, and `POST /ask` returns `503 gemini_unavailable`. `GET /health` shows `"gemini": "not_configured"`. A free Google AI Studio key is enough for development. Export it in your shell; never commit it.
+No. Without `GEMINI_API_KEY` the server starts in compute-only mode: `POST /experiment`, `GET /scenarios`, portfolio uploads and PDF reports all work over the API (the built-in UI is conversational and needs the key), and `POST /ask` returns `503` with code `ai_not_configured`. `GET /health` shows `"gemini": "not_configured"`. A free Google AI Studio key is enough for development. Export it in your shell; never commit it.
 
 **Where does market data come from?**
 Yahoo Finance's public chart API, fetched over HTTPS and cached as CSV under `data/cache/`. Prices are aligned to the NSE trading calendar. Common large caps and the five factor series are pre-fetched a few seconds after startup so the first request is fast. Yahoo is free but rate-limited; if you see `429`-style errors, wait and retry, or rely on the cache.
+
+**Why is `data_as_of` old?**
+Once a ticker is cached, the server reuses that file and does not re-fetch it. On platforms with ephemeral disks (Cloud Run, Fly machines) the cache resets on each cold start, so this rarely shows; on a long-running self-hosted server, prices stay at the date of the first fetch. Every trace reports `data_as_of`, so it is visible. To refresh, stop the server, delete `data/cache/*.csv`, and restart (the startup warmup re-fetches common tickers). The CLI accepts `--refresh`.
 
 **Which broker exports can I upload?**
 CSV or XLSX holdings exports from Zerodha, Upstox, Groww, Angel One, HDFC Securities, ICICI Direct, 5Paisa, Motilal Oswal and Kotak Securities, plus a plain `ticker,weight` (or `ticker,shares,avg_price_inr`) file. ISIN-identified holdings are resolved to NSE/BSE symbols; non-equity instruments (ETFs, mutual funds, bonds) and unresolvable ones are reported as skipped and the remaining weights renormalised.

@@ -310,6 +310,19 @@ pub async fn post_ask(
     }
     validate_portfolio(&req.portfolio)?;
 
+    // Compute-only mode (no GEMINI_API_KEY): say so plainly instead of the
+    // generic "temporarily busy" message reserved for real Gemini outages.
+    if !state.gemini_configured {
+        return Err(ApiError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            code: "ai_not_configured",
+            message: "Natural-language questions need GEMINI_API_KEY, which is not set on this \
+                      server. POST /experiment works without it."
+                .to_string(),
+            extra: None,
+        });
+    }
+
     // Held until the handler returns. Cheap validation above runs first so
     // a malformed request never occupies a permit.
     let _permit =

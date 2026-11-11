@@ -5,7 +5,7 @@ All notable changes are documented here. This project follows [Keep a Changelog]
 ## [Unreleased] — open-core-relaunch
 
 ### Synced from upstream drift-risk-copilot (through 765574b, 2026-10-11)
-- `PortfolioPerformance` now includes a GARCH(1,1) volatility forecast
+- `RiskDecomposition` now includes a GARCH(1,1) volatility forecast
 - Holdings upload recognises exports from 9 Indian brokers; ISIN → NSE/BSE resolution with instrument classification
 - Upstox OAuth holdings import (`/auth/upstox/login|callback|status`)
 - Chart-ready visualisation data on `/ask`, led by a daily portfolio value history

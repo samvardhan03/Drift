@@ -16,7 +16,7 @@ POST /experiment
   validate portfolio (≥2 holdings, weights)
   └─ compute::dispatch::run_experiment
        ├─ resolve tickers → fetch / load cached prices → align to NSE calendar
-       ├─ fit factor model + HMM regime (+ GARCH for PortfolioPerformance)
+       ├─ fit factor model + HMM regime (+ GARCH forecast for RiskDecomposition)
        ├─ run the experiment, attach passive policy check if a policy was given
        └─ EvidenceTrace ──► stored in SQLite ──► JSON response
                                             └─► GET /report/:id renders PDF
