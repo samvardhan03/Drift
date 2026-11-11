@@ -13,6 +13,9 @@ All notable changes are documented here. This project follows [Keep a Changelog]
 - `/health` reports integration status and request load; `/ask` concurrency limiter; market-data cache warmup
 - JSON errors for every rejection path
 
+### Security
+- Dependency bumps for RustSec advisories published Oct 2026: `calamine` 0.36 → 0.38 (CFB parser OOM; brings `zip` 9.5, fixing 4 extraction advisories), `rusqlite` 0.31 → 0.41 (`libsqlite3-sys` 0.39, bundled SQLite CVE), `rustls` 0.23.46, `rustls-webpki` 0.103.16, `webpki-roots` 1.0.12, `tokio` 1.54
+
 ### Changed
 - Upstox redirect URI defaults to `http://localhost:8080/auth/upstox/callback` (upstream default pointed at a specific hosted deployment)
 - Upstream `INTEGRATION.md` moved to `docs/api-reference.md` with placeholder hosts
