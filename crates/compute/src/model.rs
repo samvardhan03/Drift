@@ -16,6 +16,27 @@ use crate::regime::{self, RegimeState};
 /// recorded (see `fit_factor_model`'s `regime_covariance` handling).
 pub const MIN_REGIME_OBSERVATIONS: usize = 30;
 
+/// Minimum return observations a single ticker needs for its own OLS fit
+/// to be attempted at all. Below this, `fit_factor_model` hard-fails with
+/// `ComputeError::InsufficientData` naming that ticker -- too few points to
+/// fit an intercept plus `FACTOR_NAMES.len()` betas reliably, let alone to
+/// trust the result.
+pub const MIN_TICKER_OBSERVATIONS: usize = 30;
+
+/// Minimum periods the *shared* factor-model window (factor covariance +
+/// regime fit, common to every holding) may be reduced to. This is bounded
+/// only by how much factor history actually exists (`total_obs`, see
+/// `fit_factor_model`) -- a single short-lived holding never reduces it,
+/// since each ticker is fit on its own available history independently
+/// (down to `MIN_TICKER_OBSERVATIONS`) rather than forcing a smaller shared
+/// window on every other holding. In practice `total_obs` comes from five
+/// years of factor history and is essentially never this small; this floor
+/// exists for the degenerate case where it is. Set to `regime::fit_hmm`'s
+/// own hard minimum (3 states x 30 observations/state) so this check always
+/// catches an unfittable window with a clear 422 before `fit_hmm` itself
+/// would otherwise fail with an opaque 500.
+pub const MIN_MODEL_WINDOW: usize = 90;
+
 /// Return frequency the factor model is fit at. Non-overlapping: `Weekly`
 /// returns are computed between successive week-end closes, not a rolling
 /// 5-day window.
@@ -135,6 +156,11 @@ pub struct FactorModel {
     /// (see `regime_fallback_warnings`).
     pub regime_factor_covariance_daily: Option<[DMatrix<f64>; 3]>,
     pub regime_fallback_warnings: Vec<String>,
+    /// `(ticker, obs_count)` for every holding fit with fewer observations
+    /// than `window` (see `MIN_TICKER_OBSERVATIONS`/`MIN_MODEL_WINDOW`'s
+    /// docs and `fit_factor_model`'s per-ticker windowing). Empty when
+    /// every holding has at least `window` observations.
+    pub short_history_tickers: Vec<(String, usize)>,
 }
 
 impl FactorModel {
@@ -365,9 +391,16 @@ pub fn fit_factor_model(
         .collect::<Result<Vec<_>>>()?;
 
     let total_obs = factor_matrices[0].len();
-    if total_obs < window {
-        return Err(ComputeError::Model(format!(
-            "only {total_obs} return observations available, need {window} for the trailing window"
+    // The shared factor-model window (factor covariance + regime fit) is
+    // bounded only by how much factor history exists, never by any single
+    // holding's own (possibly much shorter) history -- see
+    // `MIN_MODEL_WINDOW`'s doc.
+    let window = window.min(total_obs);
+    if window < MIN_MODEL_WINDOW {
+        return Err(ComputeError::InsufficientData(format!(
+            "Only {total_obs} return observations are available for the market factors, which \
+             limits the analysis window to {window} days -- too short for reliable risk \
+             estimates. Please try again once more price history has accumulated."
         )));
     }
     let start = total_obs - window;
@@ -394,22 +427,38 @@ pub fn fit_factor_model(
     let regime_state = Some(state);
 
     let mut fits = Vec::with_capacity(tickers.len());
+    let mut short_history_tickers = Vec::new();
     for ticker in tickers {
         let series = data
             .stock_returns
             .get(ticker)
             .ok_or_else(|| ComputeError::Model(format!("missing return series for {ticker}")))?;
-        if series.len() < window {
-            return Err(ComputeError::Model(format!(
-                "ticker {ticker} has only {} observations, need {window}",
-                series.len()
+        let obs = series.len();
+        if obs < MIN_TICKER_OBSERVATIONS {
+            return Err(ComputeError::InsufficientData(format!(
+                "ticker {ticker} has only {obs} return observations, need at least \
+                 {MIN_TICKER_OBSERVATIONS}. This symbol may have been listed too recently for a \
+                 reliable fit."
             )));
         }
-        let series_start = series.len() - window;
-        let y = DVector::from_fn(window, |i, _| series[series_start + i]);
+
+        // Each ticker is fit on its own available history, independently
+        // of the shared `window` -- a recently listed holding never forces
+        // every other holding onto a smaller window (see `MIN_MODEL_WINDOW`'s
+        // doc). Both the stock series and the factor window are sliced to
+        // the same trailing `ticker_window` length so they stay aligned.
+        let ticker_window = obs.min(window);
+        if ticker_window < window {
+            short_history_tickers.push((ticker.clone(), obs));
+        }
+
+        let series_start = obs - ticker_window;
+        let y = DVector::from_fn(ticker_window, |i, _| series[series_start + i]);
+        let factor_start = window - ticker_window;
+        let ticker_factors = factors_window.rows(factor_start, ticker_window).into_owned();
 
         let (intercept, betas, residual_variance_daily, r_squared) =
-            ols_fit(&y, &factors_window)?;
+            ols_fit(&y, &ticker_factors)?;
 
         fits.push(StockFit {
             ticker: ticker.clone(),
@@ -417,7 +466,7 @@ pub fn fit_factor_model(
             betas,
             residual_variance_daily,
             r_squared,
-            n_obs: window,
+            n_obs: ticker_window,
         });
     }
 
@@ -431,6 +480,7 @@ pub fn fit_factor_model(
         regime_state,
         regime_factor_covariance_daily,
         regime_fallback_warnings,
+        short_history_tickers,
     })
 }
 

@@ -177,13 +177,21 @@ pub fn run_cvar_rebalance(
                 .ok_or_else(|| ComputeError::Model(format!("missing return series for {t}")))
         })
         .collect::<Result<Vec<_>>>()?;
-    let total_obs = series[0].len();
+    // Scenarios pair same-date returns across tickers, so this needs a
+    // length common to every holding -- the minimum across all of them,
+    // not just the first (holdings can now have differently-lengthed
+    // histories; see `data::trailing_non_none_run`).
+    let total_obs = series.iter().map(|s| s.len()).min().unwrap_or(0);
     let window = input.window.unwrap_or(total_obs).min(total_obs).max(1);
-    let start = total_obs - window;
+    // Every series is right-aligned to the same most-recent date but may
+    // have a different length (see `data::trailing_non_none_run`), so each
+    // ticker's own trailing-`window` slice starts at its own offset, not a
+    // single shared `start`.
+    let offsets: Vec<usize> = series.iter().map(|s| s.len() - window).collect();
 
     // scenarios[s][i] = simple return of stock i in scenario s.
     let scenarios: Vec<Vec<f64>> = (0..window)
-        .map(|s| (0..n).map(|i| log_to_simple(series[i][start + s])).collect())
+        .map(|s| (0..n).map(|i| log_to_simple(series[i][offsets[i] + s])).collect())
         .collect();
     let scenario_count = window;
 
@@ -271,6 +279,7 @@ pub fn run_cvar_rebalance(
         regime_state,
         regime_fallback_warnings,
         cap_source: Some(cap_source.to_string()),
+        short_history_tickers: Vec::new(),
     };
 
     let make_trace = |output: &CvarRebalanceOutput, invariants: Vec<InvariantCheck>| -> Result<EvidenceTrace> {
@@ -295,6 +304,7 @@ pub fn run_cvar_rebalance(
             parent_trace_ids: Vec::new(),
             baseline_model_params: None,
             policy_result: None,
+            portfolio_history: None,
         })
     };
 

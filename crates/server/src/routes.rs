@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -13,15 +15,56 @@ use store::{RiskSnapshot, SnapshotStore};
 
 use crate::backend::Backend;
 use crate::error::{ApiError, AppJson};
+use crate::upstox::UpstoxClient;
 use crate::validate::validate_portfolio;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+
+/// Upstox OAuth config, read from env once at startup (see `main::main`).
+/// `redirect_uri` always has a value (falls back to the production
+/// default); `api_key`/`api_secret` are `None` in an unconfigured
+/// environment (local dev with no credentials set).
+#[derive(Clone)]
+pub struct UpstoxConfig {
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+    pub redirect_uri: String,
+}
+
+impl UpstoxConfig {
+    pub fn is_configured(&self) -> bool {
+        self.api_key.is_some() && self.api_secret.is_some()
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub backend: Arc<dyn Backend>,
     pub store: Arc<SnapshotStore>,
+    pub upstox_config: UpstoxConfig,
+    pub upstox_client: Arc<dyn UpstoxClient>,
+    /// state UUID -> when it was issued; see `upstox::insert_state`/
+    /// `upstox::validate_and_consume_state`.
+    pub upstox_state_map: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Bounds concurrent `POST /ask` requests (each fans out to several
+    /// Gemini calls plus a CPU-heavy compute step) -- see `post_ask`.
+    pub semaphore: Arc<tokio::sync::Semaphore>,
+    /// The semaphore's total permits, reported by `GET /health`.
+    pub capacity: usize,
+    /// How long a `/ask` waits for a permit before answering 503
+    /// `service_busy`.
+    pub ask_queue_timeout: Duration,
+    pub gemini_configured: bool,
+    /// Shared HTTP client for ISIN lookups on upload. It must send a
+    /// browser-like User-Agent (see `main`).
+    pub isin_client: reqwest::Client,
+    pub isin_config: compute::isin::ResolverConfig,
 }
+
+/// Concurrent `/ask` requests allowed at once.
+pub const MAX_CONCURRENT_ASKS: usize = 8;
+/// How long a queued `/ask` waits for a free permit.
+pub const ASK_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Builds the `RiskSnapshot` `SnapshotStore::insert` persists for a
 /// completed experiment: `trace_json` is the full trace (so `GET
@@ -73,12 +116,31 @@ fn snapshot_from_trace(trace: &EvidenceTrace, portfolio: &Portfolio) -> Result<R
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
+    /// "configured" | "not_configured"
+    pub gemini: &'static str,
+    /// "configured" | "not_configured"
+    pub upstox: &'static str,
+    /// `/ask` requests currently holding a concurrency permit.
+    pub active_requests: usize,
+    pub capacity: usize,
 }
 
-pub async fn health() -> Json<HealthResponse> {
+fn configured(yes: bool) -> &'static str {
+    if yes {
+        "configured"
+    } else {
+        "not_configured"
+    }
+}
+
+pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+        gemini: configured(state.gemini_configured),
+        upstox: configured(state.upstox_config.is_configured()),
+        active_requests: state.capacity.saturating_sub(state.semaphore.available_permits()),
+        capacity: state.capacity,
     })
 }
 
@@ -147,8 +209,10 @@ pub struct AskRequest {
 
 #[derive(Serialize)]
 pub struct AskResponse {
-    pub experiment: Experiment,
-    pub trace: EvidenceTrace,
+    /// `None` only when `is_redirect` is true (no experiment ran).
+    pub experiment: Option<Experiment>,
+    /// `None` only when `is_redirect` is true.
+    pub trace: Option<EvidenceTrace>,
     pub narration: String,
     pub grounding_warnings: Vec<String>,
     /// This turn's narration as an `assistant` turn, ready for the caller
@@ -158,26 +222,82 @@ pub struct AskResponse {
     pub suggestion: String,
     /// Stored under this id in the persistent `SnapshotStore`;
     /// `GET /report/{result_id}` renders it as a PDF.
-    pub result_id: String,
+    /// `None` only when `is_redirect` is true (nothing was stored).
+    pub result_id: Option<String>,
     /// A record of the orchestration itself (the planning call, each
     /// tool's execution, the combined narration/grounding outcome) --
     /// distinct from `trace`, which records the *experiment's* evidence.
     /// Also independently retrievable via
     /// `GET /execution-trace/{agent_execution_trace.id}`.
-    pub agent_execution_trace: agent::AgentExecutionTrace,
+    /// `None` only when `is_redirect` is true.
+    pub agent_execution_trace: Option<agent::AgentExecutionTrace>,
+    /// Chart-ready data derived from `trace`, for the frontend to render
+    /// without re-deriving it from the raw trace itself. `None` if
+    /// `trace.experiment` isn't one of the seven recognised types (see
+    /// `visualization::build_visualization`).
+    pub visualization: Option<crate::visualization::VisualizationData>,
+    /// True when the question was out of scope (an individual stock's
+    /// price scenario, valuation, a price forecast, news, or not finance)
+    /// and `narration` is a redirect explaining what the system can do
+    /// instead. No experiment ran: `experiment`, `trace`, `result_id`,
+    /// `agent_execution_trace` and `visualization` are all null. The HTTP
+    /// status is 200 -- render `narration` as a normal (soft) assistant
+    /// message, not an error.
+    pub is_redirect: bool,
+}
+
+/// The follow-up chip shown under a redirect (there's no experiment to
+/// derive one from).
+const REDIRECT_SUGGESTION: &str = "Which macro factors drive my portfolio's risk most?";
+const DEFAULT_REDIRECT: &str = "I can only help with portfolio risk analysis.";
+
+impl AskResponse {
+    fn redirect(message: String) -> Self {
+        let message = if message.trim().is_empty() { DEFAULT_REDIRECT.to_string() } else { message };
+        AskResponse {
+            experiment: None,
+            trace: None,
+            assistant_turn: agent::ConversationTurn::assistant(message.clone()),
+            narration: message,
+            grounding_warnings: Vec::new(),
+            suggestion: REDIRECT_SUGGESTION.to_string(),
+            result_id: None,
+            agent_execution_trace: None,
+            visualization: None,
+            is_redirect: true,
+        }
+    }
 }
 
 pub async fn post_ask(
     State(state): State<AppState>,
     AppJson(req): AppJson<AskRequest>,
 ) -> Result<Json<AskResponse>, ApiError> {
+    // Before any Gemini call: an empty message would only come back from
+    // Gemini as a confusing "AI unavailable".
+    if req.message.trim().is_empty() {
+        return Err(ApiError::bad_request("empty_message", "Message cannot be empty."));
+    }
     validate_portfolio(&req.portfolio)?;
 
+    // Held until the handler returns. Cheap validation above runs first so
+    // a malformed request never occupies a permit.
+    let _permit = match tokio::time::timeout(state.ask_queue_timeout, state.semaphore.acquire()).await {
+        Ok(Ok(permit)) => permit,
+        // Timed out waiting, or the semaphore was closed (never, today).
+        Ok(Err(_)) | Err(_) => return Err(ApiError::service_busy()),
+    };
+
     let portfolio = req.portfolio.clone();
-    let result = state
+    let result = match state
         .backend
         .run_ask(req.portfolio, req.message, req.conversation_history, req.policy)
-        .await?;
+        .await
+    {
+        Ok(result) => result,
+        Err(crate::backend::BackendError::Redirect(message)) => return Ok(Json(AskResponse::redirect(message))),
+        Err(other) => return Err(other.into()),
+    };
 
     let mut snapshot = snapshot_from_trace(&result.trace, &portfolio)?;
     snapshot.narration = Some(result.narration.narration.clone());
@@ -203,15 +323,19 @@ pub async fn post_ask(
             ApiError::bad_request("internal_error", format!("failed to persist execution trace: {e}"))
         })?;
 
+    let visualization = crate::visualization::build_visualization(&result.trace);
+
     Ok(Json(AskResponse {
-        experiment: result.experiment,
-        trace: result.trace,
+        experiment: Some(result.experiment),
+        trace: Some(result.trace),
         narration: result.narration.narration,
         grounding_warnings: result.narration.grounding_warnings,
         assistant_turn: result.assistant_turn,
         suggestion: result.suggestion,
-        result_id,
-        agent_execution_trace: result.execution_trace,
+        result_id: Some(result_id),
+        agent_execution_trace: Some(result.execution_trace),
+        visualization,
+        is_redirect: false,
     }))
 }
 
@@ -360,4 +484,122 @@ pub async fn get_drift(
     }
 
     Ok(Json(DriftListResponse { snapshots }))
+}
+
+// ---------------------------------------------------------------------
+// Upstox OAuth
+// ---------------------------------------------------------------------
+
+const UPSTOX_AUTHORIZE_URL: &str = "https://api.upstox.com/v2/login/authorization/dialog";
+
+/// `GET /auth/upstox/login`: redirects to Upstox's OAuth 2.0 authorization
+/// dialog. 503 if Upstox credentials aren't configured in this environment
+/// (see `UpstoxConfig::is_configured`) -- local dev without credentials
+/// fails cleanly here instead of panicking or producing a broken redirect.
+///
+/// **Judgment call**: the spec's own URL host (`api.upstox.com`, given
+/// verbatim in its URL-construction section) and its test description
+/// (asserting the redirect's `Location` contains `accounts.upstox.com`)
+/// disagree. Followed the explicit URL, which also matches Upstox's real,
+/// documented OAuth endpoint -- flagged in this session's report rather
+/// than silently picking one.
+pub async fn get_upstox_login(State(state): State<AppState>) -> Response {
+    let Some(api_key) = state.upstox_config.api_key.as_deref() else {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "not_configured", "Upstox OAuth not configured")
+            .into_response();
+    };
+
+    let oauth_state = crate::upstox::insert_state(&state.upstox_state_map);
+    let url = format!(
+        "{UPSTOX_AUTHORIZE_URL}?response_type=code&client_id={}&redirect_uri={}&state={}",
+        urlencoding::encode(api_key),
+        urlencoding::encode(&state.upstox_config.redirect_uri),
+        urlencoding::encode(&oauth_state),
+    );
+
+    (StatusCode::FOUND, [(header::LOCATION, url)]).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct UpstoxCallbackQuery {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct UpstoxImportResponse {
+    pub portfolio: Portfolio,
+    pub holdings_count: usize,
+    pub data_as_of: String,
+}
+
+/// `GET /auth/upstox/callback`: receives Upstox's redirect after the user
+/// logs in (`?code=...&state=...`), exchanges the one-time `code` for an
+/// access token, fetches holdings, and returns them as a `Portfolio`. The
+/// access token is used exactly once for the holdings fetch and never
+/// persisted -- this endpoint is stateless and read-only with respect to
+/// the user's Upstox account.
+pub async fn get_upstox_callback(
+    State(state): State<AppState>,
+    Query(query): Query<UpstoxCallbackQuery>,
+) -> Result<Json<UpstoxImportResponse>, ApiError> {
+    let code = query
+        .code
+        .ok_or_else(|| ApiError::bad_request("invalid_callback", "missing \"code\" query parameter"))?;
+    let oauth_state = query
+        .state
+        .ok_or_else(|| ApiError::bad_request("invalid_callback", "missing \"state\" query parameter"))?;
+
+    if !crate::upstox::validate_and_consume_state(&state.upstox_state_map, &oauth_state) {
+        return Err(ApiError::bad_request(
+            "invalid_state",
+            "Invalid or expired OAuth state. Please try again.",
+        ));
+    }
+
+    let (api_key, api_secret) = match (&state.upstox_config.api_key, &state.upstox_config.api_secret) {
+        (Some(k), Some(s)) => (k.clone(), s.clone()),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "not_configured",
+                "Upstox OAuth not configured",
+            ))
+        }
+    };
+
+    let access_token = state
+        .upstox_client
+        .exchange_code_for_token(&code, &api_key, &api_secret, &state.upstox_config.redirect_uri)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "upstox_error", e.to_string()))?;
+
+    let holdings = state
+        .upstox_client
+        .fetch_holdings(&access_token)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "upstox_error", e.to_string()))?;
+
+    let portfolio = crate::upstox::holdings_to_portfolio(&holdings).map_err(|e| match e {
+        crate::upstox::UpstoxError::InsufficientHoldings => {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "upstox_error", e.to_string())
+        }
+        other => ApiError::new(StatusCode::BAD_GATEWAY, "upstox_error", other.to_string()),
+    })?;
+
+    let holdings_count = portfolio.holdings.len();
+    Ok(Json(UpstoxImportResponse {
+        portfolio,
+        holdings_count,
+        data_as_of: chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// `GET /auth/upstox/status`: whether Upstox credentials are configured in
+/// this environment, so the UI can decide whether to show the "Connect
+/// with Upstox" button at all.
+pub async fn get_upstox_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "configured": state.upstox_config.is_configured() }))
 }

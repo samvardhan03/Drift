@@ -127,6 +127,7 @@ pub fn run_risk_drift(
     let (current_output, current_trace) = crate::experiments::run_risk_decomposition(
         &data.quality,
         data_window,
+        &data,
         &model,
         &current_input,
     )?;
@@ -301,6 +302,7 @@ pub fn compute_risk_drift(
         parent_trace_ids: vec![baseline_snapshot.id.clone()],
         baseline_model_params,
         policy_result: None,
+        portfolio_history: None,
     };
 
     Ok((output, trace))

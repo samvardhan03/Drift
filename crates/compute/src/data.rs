@@ -190,10 +190,41 @@ pub fn fetch_yahoo_chart(ticker: &str) -> Result<PriceSeries> {
         "https://query1.finance.yahoo.com/v8/finance/chart/{}?range=5y&interval=1d",
         urlencode_ticker(ticker)
     );
+    fetch_chart_from(&url, ticker, YAHOO_TIMEOUT)
+}
+
+/// Per-request timeout for every Yahoo Finance call.
+const YAHOO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+const DATA_UNAVAILABLE_MESSAGE: &str = "Market data temporarily unavailable. Please try again in a moment.";
+
+/// Timeouts, connection failures and 429/5xx responses are Yahoo being
+/// unreachable (transient, our upstream's problem); everything else
+/// (notably a 404, which `load_series_resolved` turns into
+/// `UnresolvedTicker`) keeps its `Http` form.
+fn classify_http_error(err: reqwest::Error) -> ComputeError {
+    let transient_status = err
+        .status()
+        .map(|s| s == reqwest::StatusCode::TOO_MANY_REQUESTS || s.is_server_error())
+        .unwrap_or(false);
+    if err.is_timeout() || err.is_connect() || transient_status {
+        ComputeError::DataUnavailable(DATA_UNAVAILABLE_MESSAGE.to_string())
+    } else {
+        ComputeError::Http(err)
+    }
+}
+
+fn fetch_chart_from(url: &str, ticker: &str, timeout: std::time::Duration) -> Result<PriceSeries> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("drift-risk-copilot/0.1 (+compute-data-layer)")
+        .user_agent("drift/0.1 (+compute-data-layer)")
+        .timeout(timeout)
         .build()?;
-    let resp: YahooChartResponse = client.get(&url).send()?.error_for_status()?.json()?;
+    let resp: YahooChartResponse = client
+        .get(url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(classify_http_error)?;
 
     if let Some(err) = resp.chart.error {
         if !err.is_null() {
@@ -267,6 +298,38 @@ pub fn load_series(cache_dir: &Path, ticker: &str, refresh: bool) -> Result<Pric
     Ok(fetched)
 }
 
+/// Whether `err` represents an HTTP 404 from Yahoo Finance specifically
+/// (as opposed to a network error, a 5xx, a malformed response, ...) --
+/// used to distinguish "this symbol doesn't exist on Yahoo even after
+/// resolution" (a 422, the caller's problem) from any other failure
+/// (a 500, this service's problem). `.error_for_status()` in
+/// `fetch_yahoo_chart` turns a 404 response into exactly this
+/// `reqwest::Error` variant.
+fn is_http_404(err: &ComputeError) -> bool {
+    matches!(err, ComputeError::Http(e) if e.status() == Some(reqwest::StatusCode::NOT_FOUND))
+}
+
+/// Loads `ticker` via `resolve_ticker`'s resolved form. If Yahoo Finance
+/// still 404s for the resolved symbol, returns a `ComputeError::UnresolvedTicker`
+/// naming both the original and resolved ticker so the caller can surface a
+/// clear, actionable 422 instead of a generic 500.
+fn load_series_resolved(cache_dir: &Path, raw_ticker: &str, refresh: bool) -> Result<PriceSeries> {
+    if crate::ticker_map::is_isin(raw_ticker) {
+        return Err(crate::ticker_map::isin_error(raw_ticker));
+    }
+    let resolved = crate::ticker_map::resolve_ticker(raw_ticker);
+    match load_series(cache_dir, &resolved, refresh) {
+        Ok(series) => Ok(series),
+        Err(e) if is_http_404(&e) => Err(ComputeError::UnresolvedTicker(format!(
+            "Could not fetch market data for ticker '{raw_ticker}' (tried '{resolved}'). \
+             This symbol may be delisted, suspended, or use a different name on Yahoo \
+             Finance. Please remove it from your portfolio or replace it with the correct \
+             NSE symbol."
+        ))),
+        Err(e) => Err(e),
+    }
+}
+
 /// Aligns a raw series onto `calendar` (ascending, deduplicated master
 /// dates), forward-filling gaps of up to `MAX_FORWARD_FILL_DAYS` calendar
 /// slots and dropping the series' value on dates beyond that. Returns the
@@ -311,6 +374,23 @@ fn align_to_calendar(
     (aligned, fills, drops)
 }
 
+/// The longest contiguous run of `Some` values ending at `closes`'s last
+/// element, converted to plain `f64`s -- i.e. "whatever recent, unbroken
+/// price history this series actually has," discarding anything before a
+/// gap (a too-recent listing, or a forward-fill gap too large to bridge;
+/// see `MAX_FORWARD_FILL_DAYS`). Empty if `closes` ends in `None` (no
+/// recent price at all).
+fn trailing_non_none_run(closes: &[Option<f64>]) -> Vec<f64> {
+    let mut start = closes.len();
+    for (i, c) in closes.iter().enumerate().rev() {
+        if c.is_none() {
+            break;
+        }
+        start = i;
+    }
+    closes[start..].iter().map(|c| c.expect("trailing run is all Some by construction")).collect()
+}
+
 fn log_returns(prices: &[f64]) -> Vec<f64> {
     prices.windows(2).map(|w| (w[1] / w[0]).ln()).collect()
 }
@@ -333,17 +413,13 @@ pub fn load_aligned_prices(
     let mut per_series_quality = Vec::new();
     let mut aligned_closes: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
 
-    let mut all_tickers: Vec<String> = stock_tickers.to_vec();
-    for t in FACTOR_TICKERS {
-        all_tickers.push(t.to_string());
-    }
-
-    for ticker in &all_tickers {
-        let series = if ticker == MARKET {
-            market_series.clone()
-        } else {
-            load_series(cache_dir, ticker, refresh)?
-        };
+    // Stock tickers (the portfolio's own holdings): each raw ticker is run
+    // through `resolve_ticker` to get the string actually sent to Yahoo, but
+    // `aligned_closes`/`per_series_quality` stay keyed by the *original*
+    // ticker string, so callers (e.g. `dispatch.rs`) never need to know
+    // about resolution.
+    for ticker in stock_tickers {
+        let series = load_series_resolved(cache_dir, ticker, refresh)?;
         let (aligned, fills, drops) = align_to_calendar(&series, &calendar);
         per_series_quality.push(SeriesQuality {
             ticker: ticker.clone(),
@@ -354,13 +430,36 @@ pub fn load_aligned_prices(
         aligned_closes.insert(ticker.clone(), aligned);
     }
 
-    // Trim leading calendar dates where any series is still None (before its
-    // first observed price) so every series has a valid price for the whole
-    // remaining window.
+    // Factor tickers: required infrastructure the factor model itself
+    // depends on (RATES_PROXY is derived from BANK and MARKET together),
+    // not an individual holding.
+    for ticker in FACTOR_TICKERS {
+        let series = if ticker == MARKET {
+            market_series.clone()
+        } else {
+            load_series(cache_dir, ticker, refresh)?
+        };
+        let (aligned, fills, drops) = align_to_calendar(&series, &calendar);
+        per_series_quality.push(SeriesQuality {
+            ticker: ticker.to_string(),
+            raw_observations: series.dates.len(),
+            forward_filled_days: fills,
+            dropped_days: drops,
+        });
+        aligned_closes.insert(ticker.to_string(), aligned);
+    }
+
+    // Trim leading calendar dates where any *factor* series is still None
+    // (before its first observed price) so every factor has a valid price
+    // for the whole remaining window. Deliberately excludes stock closes:
+    // a recently listed holding's late start date must not truncate the
+    // factor history (and every other holding's history) down to its own
+    // short window -- see `model::fit_factor_model`'s per-ticker windowing,
+    // which instead lets each holding use whatever history it actually has.
     let mut start_idx = 0usize;
     'outer: for i in 0..calendar.len() {
-        for closes in aligned_closes.values() {
-            if closes[i].is_none() {
+        for ticker in FACTOR_TICKERS {
+            if aligned_closes[ticker][i].is_none() {
                 start_idx = i + 1;
                 continue 'outer;
             }
@@ -377,10 +476,12 @@ pub fn load_aligned_prices(
         let closes = aligned_closes
             .get(ticker)
             .ok_or_else(|| ComputeError::Data(format!("missing series for {ticker}")))?;
-        let closes: Vec<f64> = closes
-            .iter()
-            .map(|c| c.expect("trimmed to a common non-None prefix"))
-            .collect();
+        let closes = trailing_non_none_run(closes);
+        if closes.is_empty() {
+            return Err(ComputeError::Data(format!(
+                "no price history available for {ticker} within the aligned window"
+            )));
+        }
         stock_closes.insert(ticker.clone(), closes);
     }
 
@@ -452,8 +553,18 @@ pub fn to_returns(prices: &AlignedPrices, frequency: crate::model::Frequency) ->
         crate::model::Frequency::Weekly => {
             let idx = weekly_resample_indices(&prices.dates);
             let dates: Vec<NaiveDate> = idx.iter().map(|&i| prices.dates[i]).collect();
+            let full_len = prices.dates.len();
+            // `series` may be shorter than `prices.dates` (a holding with
+            // less history than the factor calendar -- see
+            // `trailing_non_none_run`), always right-aligned to the same
+            // last date. Re-anchor `idx` (indices into the full calendar)
+            // onto `series`'s own indices, dropping any resampled week that
+            // predates this series' own history.
             let resample = |series: &Vec<f64>| -> Vec<f64> {
-                idx.iter().map(|&i| series[i]).collect()
+                let offset = full_len - series.len();
+                idx.iter()
+                    .filter_map(|&i| if i >= offset { Some(series[i - offset]) } else { None })
+                    .collect()
             };
             let stock_closes = prices
                 .stock_closes
@@ -524,6 +635,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_yahoo_request_that_times_out_is_data_unavailable() {
+        // A server that accepts the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/chart", listener.local_addr().unwrap());
+        let _hold = std::thread::spawn(move || {
+            let conn = listener.accept();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(conn);
+        });
+        let err = fetch_chart_from(&url, "X.NS", std::time::Duration::from_millis(200)).unwrap_err();
+        match err {
+            ComputeError::DataUnavailable(msg) => assert_eq!(msg, DATA_UNAVAILABLE_MESSAGE),
+            other => panic!("expected DataUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_isin_never_reaches_yahoo() {
+        let dir = std::env::temp_dir().join("isin-no-fetch");
+        let err = load_series_resolved(&dir, "INE672A01026", false).unwrap_err();
+        assert!(matches!(err, ComputeError::UnresolvedTicker(m) if m.contains("ISIN codes")));
+    }
+
+    #[test]
     fn weekly_resample_keeps_last_trading_day_of_each_week() {
         // Mon 2024-01-01 .. Fri 2024-01-05 (full week), then Mon 2024-01-08,
         // Tue 2024-01-09 (a holiday-shortened second week ending Tuesday).
@@ -546,4 +681,5 @@ mod tests {
             ]
         );
     }
+
 }

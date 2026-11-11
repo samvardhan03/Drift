@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use crate::conversation::ConversationTurn;
 use crate::gemini::GeminiClient;
-use crate::narrate::{narrate_with_instructions, NarrateError};
+use crate::narrate::{narrate_tools_with_options, narrate_with_instructions, NarrateError, NarrationOptions};
 
 /// Relative tolerance for matching a narration number against a trace
 /// number, to allow for Gemini's own minor rounding in prose (spec value).
@@ -38,7 +38,7 @@ impl GroundingCheck {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GroundedNarration {
     pub narration: String,
     /// Empty if the narration passed grounding (on the first attempt or
@@ -46,6 +46,11 @@ pub struct GroundedNarration {
     /// after `MAX_RETRIES` retries. The narration is returned either way —
     /// this field surfaces the warning rather than suppressing the answer.
     pub grounding_warnings: Vec<String>,
+    /// Direction/recommendation contradictions still present in the final
+    /// narration after retries (see `crate::direction`); empty if none, or
+    /// if a retry corrected them. Also rendered into `grounding_warnings`.
+    pub directional_checks: Vec<crate::direction::DirectionalViolation>,
+    pub directional_warnings: Vec<String>,
 }
 
 // --- Number extraction ---------------------------------------------------
@@ -202,17 +207,38 @@ fn approx_eq(a: f64, b: f64, relative_tolerance: f64) -> bool {
 pub fn check_grounding(narration: &str, trace_numbers: &[f64]) -> GroundingCheck {
     let mut check = GroundingCheck::default();
     for extracted in extract_numbers(narration) {
-        // Matches the extracted value against a trace number either
-        // signed or negated: the conversational narration style (see
-        // `NARRATE_SYSTEM_PROMPT`) routinely conveys a loss/decline's sign
-        // through the surrounding words instead of a literal minus sign
-        // ("lost 17.8%", "a drawdown of 20.4%"), which is exactly the
-        // magnitude a negative trace value like `total_return_pct: -17.8`
-        // grounds, just without the model repeating the sign character.
-        // Caught live verifying this session's narration style change.
+        // Matches the extracted value against a trace number under four
+        // equivalent readings:
+        //   - as-is, or negated: the conversational narration style (see
+        //     `NARRATE_SYSTEM_PROMPT`) routinely conveys a loss/decline's
+        //     sign through the surrounding words instead of a literal minus
+        //     sign ("lost 17.8%", "a drawdown of 20.4%"), which is exactly
+        //     the magnitude a negative trace value like
+        //     `total_return_pct: -17.8` grounds, just without the model
+        //     repeating the sign character. Caught live verifying this
+        //     session's narration style change.
+        //   - divided or multiplied by 100: this crate's trace structs
+        //     frequently carry *both* a raw fraction (e.g.
+        //     `portfolio_vol_annualized: 0.1386`) and its `_pct` sibling
+        //     (`portfolio_vol_annualized_pct: 13.86`) for the same
+        //     quantity. Gemini sometimes cites the fraction's own value
+        //     with a literal "%" suffix (extracted as 0.1386, since the
+        //     `pct` regex branch divides by 100) when only the `_pct`
+        //     field's value (13.86) is what's actually present nearby in
+        //     the trace, or the reverse (states "13.86" plainly when only
+        //     the raw fraction 0.1386 exists) -- either way the same
+        //     number, just scaled, so it should still ground.
+        let candidates = [
+            extracted.value,
+            -extracted.value,
+            extracted.value / 100.0,
+            -extracted.value / 100.0,
+            extracted.value * 100.0,
+            -extracted.value * 100.0,
+        ];
         let is_match = trace_numbers
             .iter()
-            .any(|&t| approx_eq(extracted.value, t, RELATIVE_TOLERANCE) || approx_eq(-extracted.value, t, RELATIVE_TOLERANCE));
+            .any(|&t| candidates.iter().any(|&c| approx_eq(c, t, RELATIVE_TOLERANCE)));
         if is_match {
             check.matched.push(extracted.value);
         } else {
@@ -282,6 +308,7 @@ pub async fn grounded_narrate<C: GeminiClient>(
     Ok(GroundedNarration {
         narration,
         grounding_warnings,
+        ..Default::default()
     })
 }
 
@@ -297,6 +324,23 @@ pub async fn grounded_narrate_many<C: GeminiClient>(
     traces: &[EvidenceTrace],
     conversation_history: &[ConversationTurn],
 ) -> Result<(GroundedNarration, u32), NarrateError> {
+    grounded_narrate_many_with(client, traces, conversation_history, &NarrationOptions::default()).await
+}
+
+/// `grounded_narrate_many` plus `NarrationOptions` (the focus holding).
+///
+/// Each attempt is checked twice: every number must appear in the traces
+/// (`check_grounding`), and no sentence may contradict a trace's direction
+/// or recommend cutting a holding the trace doesn't single out
+/// (`crate::direction`). Either failure triggers a retry (up to
+/// `MAX_RETRIES` in total) whose extra instructions name what to correct;
+/// whatever is still wrong afterwards is returned as warnings.
+pub async fn grounded_narrate_many_with<C: GeminiClient>(
+    client: &C,
+    traces: &[EvidenceTrace],
+    conversation_history: &[ConversationTurn],
+    options: &NarrationOptions,
+) -> Result<(GroundedNarration, u32), NarrateError> {
     let trace_numbers: Vec<f64> = traces
         .iter()
         .map(serde_json::to_value)
@@ -306,19 +350,33 @@ pub async fn grounded_narrate_many<C: GeminiClient>(
         .collect();
 
     let mut narration =
-        crate::narrate::narrate_tools_with_instructions(client, traces, None, conversation_history).await?;
+        narrate_tools_with_options(client, traces, None, conversation_history, options).await?;
     let mut check = check_grounding(&narration, &trace_numbers);
+    let mut violations = crate::direction::check_all(&narration, traces, conversation_history, options.focus_holding.as_deref());
     let mut retries = 0;
-    while !check.passed() && retries < MAX_RETRIES {
-        let extra = retry_instructions(&check.unmatched);
-        narration =
-            crate::narrate::narrate_tools_with_instructions(client, traces, Some(&extra), conversation_history)
-                .await?;
+    while (!check.passed() || !violations.is_empty()) && retries < MAX_RETRIES {
+        let mut extra = Vec::new();
+        if !check.passed() {
+            extra.push(retry_instructions(&check.unmatched));
+        }
+        if !violations.is_empty() {
+            extra.push(crate::direction::correction_instructions(&violations));
+        }
+        narration = narrate_tools_with_options(
+            client,
+            traces,
+            Some(&extra.join("\n\n")),
+            conversation_history,
+            options,
+        )
+        .await?;
         check = check_grounding(&narration, &trace_numbers);
+        violations = crate::direction::check_all(&narration, traces, conversation_history, options.focus_holding.as_deref());
         retries += 1;
     }
 
-    let grounding_warnings = if check.passed() {
+    let directional_warnings: Vec<String> = violations.iter().map(|v| v.message.clone()).collect();
+    let mut grounding_warnings: Vec<String> = if check.passed() {
         Vec::new()
     } else {
         check
@@ -332,11 +390,24 @@ pub async fn grounded_narrate_many<C: GeminiClient>(
             })
             .collect()
     };
+    // A direction contradiction is a factual error in the narration and is
+    // surfaced like an ungrounded number. A recommendation or earlier-turn
+    // entity that survived the retries is a policy slip, not a false
+    // statement: it stays in `directional_checks`/`directional_warnings`
+    // only, so it doesn't raise the user-facing caution banner.
+    grounding_warnings.extend(
+        violations
+            .iter()
+            .filter(|v| matches!(v.trace_direction.as_str(), "positive" | "negative"))
+            .map(|v| v.message.clone()),
+    );
 
     Ok((
         GroundedNarration {
             narration,
             grounding_warnings,
+            directional_checks: violations,
+            directional_warnings,
         },
         retries,
     ))

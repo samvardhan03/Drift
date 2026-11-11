@@ -51,7 +51,7 @@ fn all_experiment_types_have_non_null_regime_state_on_real_data() {
         frequency: Frequency::Daily,
         window: Some(window),
     };
-    let (_, trace) = run_factor_shock(&data.quality, data_window.clone(), &model, &factor_shock_input)
+    let (_, trace) = run_factor_shock(&data.quality, data_window.clone(), &data, &model, &factor_shock_input)
         .expect("run_factor_shock failed");
     assert!(trace.model_params.regime_state.is_some(), "FactorShock trace must have a non-null regime_state");
 
@@ -61,7 +61,7 @@ fn all_experiment_types_have_non_null_regime_state_on_real_data() {
         frequency: Frequency::Daily,
         window: Some(window),
     };
-    let (_, trace) = run_risk_decomposition(&data.quality, data_window.clone(), &model, &risk_decomp_input)
+    let (_, trace) = run_risk_decomposition(&data.quality, data_window.clone(), &data, &model, &risk_decomp_input)
         .expect("run_risk_decomposition failed");
     assert!(trace.model_params.regime_state.is_some(), "RiskDecomposition trace must have a non-null regime_state");
 

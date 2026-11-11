@@ -1,7 +1,56 @@
 mod common;
 
+use std::collections::BTreeMap;
+
+use chrono::NaiveDate;
+use compute::data::{DataQuality, MarketData, SeriesQuality, FACTOR_NAMES};
 use compute::model::{fit_factor_model, ledoit_wolf_shrink_identity, Frequency, ModelConfig};
+use compute::ComputeError;
 use nalgebra::DMatrix;
+
+/// Builds a hermetic `MarketData` with `n_factor_obs` factor observations
+/// (long enough for a real regime fit) and two stock tickers whose own
+/// return series may have different lengths, to exercise
+/// `fit_factor_model`'s per-ticker windowing (see its doc) independent of
+/// the data layer's own calendar alignment (`data::load_aligned_prices`).
+fn two_stock_market_data(n_factor_obs: usize, long_obs: usize, short_obs: usize) -> MarketData {
+    let mut rng = common::Rng::new(123);
+    let mut factor_returns: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for name in FACTOR_NAMES {
+        factor_returns.insert(
+            name.to_string(),
+            (0..n_factor_obs).map(|_| rng.next_signed() * 0.01).collect(),
+        );
+    }
+
+    let mut stock_returns = BTreeMap::new();
+    stock_returns.insert("LONG".to_string(), (0..long_obs).map(|_| rng.next_signed() * 0.01).collect());
+    stock_returns.insert("SHORT".to_string(), (0..short_obs).map(|_| rng.next_signed() * 0.01).collect());
+
+    let start = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+    let dates: Vec<NaiveDate> = (0..=n_factor_obs).map(|i| start + chrono::Duration::days(i as i64)).collect();
+    let quality = DataQuality {
+        date_range_start: dates[0],
+        date_range_end: *dates.last().unwrap(),
+        trading_days: dates.len(),
+        per_series: vec![
+            SeriesQuality {
+                ticker: "LONG".to_string(),
+                raw_observations: long_obs + 1,
+                forward_filled_days: 0,
+                dropped_days: 0,
+            },
+            SeriesQuality {
+                ticker: "SHORT".to_string(),
+                raw_observations: short_obs + 1,
+                forward_filled_days: 0,
+                dropped_days: 0,
+            },
+        ],
+    };
+
+    MarketData { dates, stock_returns, factor_returns, quality }
+}
 
 #[test]
 fn ols_recovers_known_betas() {
@@ -100,6 +149,68 @@ fn regime_conditional_f_is_psd_for_all_three_regimes_on_real_nsei_data() {
                 "F for regime {regime_idx} has a negative eigenvalue: {lambda}"
             );
         }
+    }
+}
+
+/// A ticker with 45 return observations (above `MIN_TICKER_OBSERVATIONS`=30,
+/// below the configured 252-day window) is fit on its own 45-day window
+/// rather than failing the whole request -- see `fit_factor_model`'s
+/// per-ticker windowing doc.
+#[test]
+fn a_ticker_with_45_observations_uses_a_45_day_window_and_is_recorded_as_short_history() {
+    let data = two_stock_market_data(300, 300, 45);
+    let tickers = vec!["LONG".to_string(), "SHORT".to_string()];
+    let model = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily))
+        .expect("a 45-obs ticker should fit, not hard-fail");
+
+    let short_fit = model.fits.iter().find(|f| f.ticker == "SHORT").unwrap();
+    assert_eq!(short_fit.n_obs, 45);
+    let long_fit = model.fits.iter().find(|f| f.ticker == "LONG").unwrap();
+    assert_eq!(long_fit.n_obs, 252, "an established ticker must keep the full configured window");
+
+    assert_eq!(model.short_history_tickers, vec![("SHORT".to_string(), 45)]);
+}
+
+/// A ticker with fewer than `MIN_TICKER_OBSERVATIONS` (30) return
+/// observations hard-fails the whole request with
+/// `ComputeError::InsufficientData`, naming the ticker and its observation
+/// count.
+#[test]
+fn a_ticker_with_20_observations_hard_fails_with_insufficient_data() {
+    let data = two_stock_market_data(300, 300, 20);
+    let tickers = vec!["LONG".to_string(), "SHORT".to_string()];
+    let result = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily));
+
+    let Err(err) = result else {
+        panic!("a 20-obs ticker must hard-fail");
+    };
+    match err {
+        ComputeError::InsufficientData(msg) => {
+            assert!(msg.contains("SHORT"), "message should name the ticker: {msg}");
+            assert!(msg.contains("20"), "message should state the observation count: {msg}");
+        }
+        other => panic!("expected ComputeError::InsufficientData, got {other:?}"),
+    }
+}
+
+/// When the *shared* factor history itself is too thin (here, only 70
+/// total factor observations -- below `MIN_MODEL_WINDOW`=90, independent of
+/// any single ticker's own history), the whole request fails with a clear
+/// `ComputeError::InsufficientData`, not an opaque regime-fit error.
+#[test]
+fn an_effective_window_below_the_model_floor_hard_fails_with_a_clear_message() {
+    let data = two_stock_market_data(70, 300, 300);
+    let tickers = vec!["LONG".to_string(), "SHORT".to_string()];
+    let result = fit_factor_model(&data, &tickers, ModelConfig::new(252, Frequency::Daily));
+
+    let Err(err) = result else {
+        panic!("a factor history shorter than the model floor must hard-fail");
+    };
+    match err {
+        ComputeError::InsufficientData(msg) => {
+            assert!(msg.contains("70"), "message should state the available observations: {msg}");
+        }
+        other => panic!("expected ComputeError::InsufficientData, got {other:?}"),
     }
 }
 

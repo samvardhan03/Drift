@@ -80,6 +80,33 @@ fn a_positive_stated_magnitude_matches_a_negative_trace_value() {
     assert_eq!(check.matched.len(), 2);
 }
 
+/// Regression test for a false grounding warning: a trace that only
+/// carries a quantity's `_pct` sibling (e.g. `portfolio_vol_annualized_pct:
+/// 13.86`, not the raw fraction) still grounds a narration that states it
+/// with a literal "%" suffix ("13.9%", extracted as the fraction 0.139 by
+/// `extract_numbers`'s `pct` branch) -- the two are the same number, just
+/// scaled by 100.
+#[test]
+fn a_percent_stated_number_grounds_against_a_trace_value_scaled_by_100() {
+    let trace_numbers = vec![13.86];
+    let narration = "Your annualized volatility is 13.9%.";
+    let check = check_grounding(narration, &trace_numbers);
+    assert!(check.passed(), "unmatched: {:?}", check.unmatched);
+}
+
+/// The reverse of the above: a trace that only carries the raw fraction
+/// (e.g. `portfolio_vol_annualized: 0.1386`) still grounds a narration
+/// that states it plainly, without a "%" suffix, as if it were already a
+/// percentage ("13.86", extracted as-is by `extract_numbers`'s `plain`
+/// branch).
+#[test]
+fn a_plain_stated_number_grounds_against_a_trace_value_scaled_by_one_hundredth() {
+    let trace_numbers = vec![0.1386];
+    let narration = "Your annualized volatility is 13.86.";
+    let check = check_grounding(narration, &trace_numbers);
+    assert!(check.passed(), "unmatched: {:?}", check.unmatched);
+}
+
 #[test]
 fn narration_with_all_matching_numbers_passes() {
     let trace_numbers = vec![-0.12, 0.20, -1_175_389.13, 252.0];
@@ -167,6 +194,7 @@ fn sample_trace() -> compute::trace::EvidenceTrace {
             regime_state: None,
             regime_fallback_warnings: vec![],
             cap_source: None,
+            short_history_tickers: vec![],
         },
         outputs: serde_json::json!({ "result": { "portfolio_vol_annualized": 0.1552 } }),
         invariants: vec![],
@@ -176,5 +204,6 @@ fn sample_trace() -> compute::trace::EvidenceTrace {
         parent_trace_ids: Vec::new(),
         baseline_model_params: None,
         policy_result: None,
+        portfolio_history: None,
     }
 }

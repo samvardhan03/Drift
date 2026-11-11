@@ -89,11 +89,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let trace = match &experiment {
         Experiment::FactorShock(input) => {
-            let (_, trace) = run_factor_shock(&data.quality, data_window, &model, input)?;
+            let (_, trace) = run_factor_shock(&data.quality, data_window, &data, &model, input)?;
             trace
         }
         Experiment::RiskDecomposition(input) => {
-            let (_, trace) = run_risk_decomposition(&data.quality, data_window, &model, input)?;
+            let (_, trace) = run_risk_decomposition(&data.quality, data_window, &data, &model, input)?;
             trace
         }
         Experiment::CvarRebalance(_) | Experiment::PortfolioPerformance(_) | Experiment::RiskDrift(_) | Experiment::ReverseStress(_) | Experiment::PolicyCheck(_) => {

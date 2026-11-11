@@ -4,6 +4,22 @@ All notable changes are documented here. This project follows [Keep a Changelog]
 
 ## [Unreleased] — open-core-relaunch
 
+### Synced from upstream drift-risk-copilot (through 765574b, 2026-10-11)
+- `PortfolioPerformance` now includes a GARCH(1,1) volatility forecast
+- Holdings upload recognises exports from 9 Indian brokers; ISIN → NSE/BSE resolution with instrument classification
+- Upstox OAuth holdings import (`/auth/upstox/login|callback|status`)
+- Chart-ready visualisation data on `/ask`, led by a daily portfolio value history
+- Multi-tool orchestration for `/ask`; strict trace-only narration; directional and recommendation grounding checks
+- `/health` reports integration status and request load; `/ask` concurrency limiter; market-data cache warmup
+- JSON errors for every rejection path
+
+### Changed
+- Upstox redirect URI defaults to `http://localhost:8080/auth/upstox/callback` (upstream default pointed at a specific hosted deployment)
+- Upstream `INTEGRATION.md` moved to `docs/api-reference.md` with placeholder hosts
+- Postman collection base URL set to `http://localhost:8080`
+- FAQ/README: removed an incorrect "lookahead-safe" claim for the open core and an incorrect data-client claim
+- CI: `cargo fmt --check` is advisory until upstream code is formatted; toolchain file declares `rustfmt`/`clippy`
+
 ### Added
 - Complete Rust workspace: `crates/agent`, `crates/compute`, `crates/server`, `crates/store`
 - Axum HTTP API: `/experiment`, `/ask`, `/report/:id`, `/execution-trace/:id`, `/scenarios`, `/health`, `/portfolio/upload`

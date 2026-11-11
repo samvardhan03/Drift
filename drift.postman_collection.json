@@ -1,14 +1,14 @@
 {
   "info": {
     "_postman_id": "b8a1f6b2-3c1e-4b7a-9f3e-6a2f1c9d7e21",
-    "name": "drift-risk-copilot",
-    "description": "Full API surface for drift-risk-copilot (AI Builder Cup 2026): /health, /experiment (direct), /ask (NL via Gemini), /scenarios, /report/{id} (PDF), multi-turn conversation, regime-conditional experiments, validation errors, and edge cases. All bodies/assertions use the field names actually returned by the service, not assumed names -- see the checkpoint reports for the lists of mismatches found while building/extending this.",
+    "name": "Drift",
+    "description": "Full API surface for Drift: /health, /experiment (direct), /ask (NL via Gemini), /scenarios, /report/{id} (PDF), multi-turn conversation, regime-conditional experiments, validation errors, and edge cases. All bodies/assertions use the field names actually returned by the service, not assumed names -- see the checkpoint reports for the lists of mismatches found while building/extending this.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "https://drift-risk-copilot-99506253437.asia-south1.run.app",
+      "value": "http://localhost:8080",
       "type": "string"
     },
     {

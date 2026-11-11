@@ -235,3 +235,38 @@ fn cap_too_tight_for_full_investment_is_reported_as_infeasible() {
     assert!(output.weights_after.is_none());
     assert!(trace.invariants.iter().any(|i| !i.passed));
 }
+
+/// A "what is my CVaR?" question runs the optimizer read-only: turnover 0
+/// with the position cap lifted. With the default 20% cap a concentrated
+/// portfolio would be forced to trade (so `tau = 0` is infeasible) -- the
+/// planner therefore sends `per_name_cap: 1.0` alongside `turnover_limit: 0.0`.
+#[test]
+fn read_only_cvar_needs_the_cap_lifted_for_a_concentrated_portfolio() {
+    let (crash, safe) = crash_vs_safe_returns();
+    let data = common::market_data_from_log_returns(&[("CRASH", crash), ("SAFE", safe)]);
+    let input = |cap: Option<f64>| CvarRebalanceInput {
+        portfolio: Portfolio {
+            holdings: vec![
+                Holding { ticker: "CRASH".to_string(), weight: 0.6 },
+                Holding { ticker: "SAFE".to_string(), weight: 0.4 },
+            ],
+            total_value_inr: 1_000_000.0,
+        },
+        confidence_level: 0.95,
+        per_name_cap: cap,
+        turnover_limit: 0.0,
+        commission_bps: 10.0,
+        frequency: compute::model::Frequency::Daily,
+        window: None,
+        policy: None,
+    };
+
+    let (read_only, _) = run_cvar_rebalance(&data.quality, &data, &input(Some(1.0))).unwrap();
+    assert_eq!(read_only.status, "optimal");
+    assert!(read_only.stats_before.historical_cvar > 0.0, "current CVaR is reported");
+    assert!(read_only.turnover.unwrap().abs() < 1e-6, "nothing is traded");
+
+    // Default cap (0.20) on a 60% position: the pre-solve says it cannot hold.
+    let (capped, _) = run_cvar_rebalance(&data.quality, &data, &input(None)).unwrap();
+    assert_ne!(capped.status, "optimal");
+}

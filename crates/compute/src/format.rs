@@ -13,6 +13,17 @@ pub fn to_pct_2dp(fraction: f64) -> f64 {
     (fraction * 100.0 * 100.0).round() / 100.0
 }
 
+/// `#[serde(serialize_with = "...")]` helper: rounds `value` to 6 decimal
+/// places on the way out (e.g. a `Holding::weight`), so a portfolio's
+/// weights don't carry spurious full-f64 precision into a trace or API
+/// response.
+pub fn round_6dp_serialize<S>(value: &f64, serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_f64((value * 1_000_000.0).round() / 1_000_000.0)
+}
+
 /// Rounds an already-percent-scaled value to 2 decimal places, e.g.
 /// `-1.7764 -> -1.78` -- for a value that's a product of other `_pct`
 /// fields (already percent-scaled), where `to_pct_2dp` would incorrectly
@@ -85,6 +96,13 @@ mod tests {
     #[test]
     fn value_under_a_thousand_is_ungrouped() {
         assert_eq!(format_inr(100.0), "\u{20b9}100");
+    }
+
+    #[test]
+    fn weight_serializes_rounded_to_6dp() {
+        let holding = crate::experiments::Holding { ticker: "RELIANCE.NS".to_string(), weight: 0.123456789 };
+        let value = serde_json::to_value(&holding).unwrap();
+        assert_eq!(value["weight"], serde_json::json!(0.123457));
     }
 
     #[test]

@@ -51,6 +51,16 @@ pub struct HmmModel {
 /// Constant `RegimeState::smoothing_note` value (see its field doc).
 const SMOOTHING_NOTE: &str = "full-history smoothed, not suitable for live trading signals";
 
+/// `serde(default)` for `RegimeState::transition_matrix`, so a trace stored
+/// before this field existed still deserializes (same backward-compatible-
+/// additive-field pattern every other trace field addition in this
+/// codebase has used) -- an all-zero matrix, which is obviously not a real
+/// transition matrix, but there is no way to recover the original one from
+/// stored data that never recorded it.
+fn default_transition_matrix() -> [[f64; N_STATES]; N_STATES] {
+    [[0.0; N_STATES]; N_STATES]
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RegimeState {
     /// 0 = Bull, 1 = Bear, 2 = Crisis.
@@ -66,6 +76,100 @@ pub struct RegimeState {
     pub log_likelihood: f64,
     pub n_iter: u32,
     pub smoothing_note: &'static str,
+    /// The fitted Baum-Welch transition matrix, in the same variance-sorted
+    /// (Bull/Bear/Crisis) state order as everything else on this struct.
+    /// `transition_matrix[i][j]` = P(regime j at t+1 | regime i at t).
+    pub transition_matrix: [[f64; N_STATES]; N_STATES],
+    /// Forecast regime-probability distribution at 5/10/20 trading days
+    /// out, propagated forward from `smoothed_probs` via
+    /// `transition_matrix` (see `regime_forecast`).
+    pub regime_forecast: Vec<RegimeForecast>,
+}
+
+/// One horizon's forecast regime-probability distribution -- see
+/// `RegimeState::regime_forecast`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RegimeForecast {
+    pub horizon_days: u32,
+    pub bull_probability: f64,
+    pub bear_probability: f64,
+    pub crisis_probability: f64,
+    pub most_likely_regime: String,
+    /// `1 - pi_h[current_regime]`: the probability the regime at this
+    /// horizon is *not* the regime currently in effect.
+    pub regime_change_probability: f64,
+}
+
+/// 3x3 matrix multiplication (plain nested arrays, not `nalgebra` -- this
+/// is fixed-size and only ever used for the regime-forecast matrix power
+/// below, not worth pulling a generic matrix type into).
+fn mat_mul(a: &[[f64; N_STATES]; N_STATES], b: &[[f64; N_STATES]; N_STATES]) -> [[f64; N_STATES]; N_STATES] {
+    let mut out = [[0.0; N_STATES]; N_STATES];
+    for i in 0..N_STATES {
+        for j in 0..N_STATES {
+            out[i][j] = (0..N_STATES).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    out
+}
+
+fn mat_identity() -> [[f64; N_STATES]; N_STATES] {
+    let mut m = [[0.0; N_STATES]; N_STATES];
+    for i in 0..N_STATES {
+        m[i][i] = 1.0;
+    }
+    m
+}
+
+/// `a^h` via repeated squaring (`O(log h)` matrix multiplications instead
+/// of `h`), so this stays cheap even for a much larger horizon than the
+/// 5/10/20-day forecasts this module actually reports.
+pub fn matrix_power(a: &[[f64; N_STATES]; N_STATES], h: u32) -> [[f64; N_STATES]; N_STATES] {
+    let mut result = mat_identity();
+    let mut base = *a;
+    let mut exp = h;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = mat_mul(&result, &base);
+        }
+        if exp > 1 {
+            base = mat_mul(&base, &base);
+        }
+        exp >>= 1;
+    }
+    result
+}
+
+/// Row-vector x matrix: `out[j] = sum_k v[k] * m[k][j]`.
+fn vec_mat_mul(v: &[f64; N_STATES], m: &[[f64; N_STATES]; N_STATES]) -> [f64; N_STATES] {
+    std::array::from_fn(|j| (0..N_STATES).map(|k| v[k] * m[k][j]).sum())
+}
+
+/// Builds the 5/10/20-trading-day regime forecasts: `pi_h = gamma_T . A^h`
+/// (see `RegimeState::regime_forecast`'s doc).
+fn build_regime_forecast(
+    smoothed_probs: &[f64; N_STATES],
+    transition_matrix: &[[f64; N_STATES]; N_STATES],
+    current_regime: u8,
+) -> Vec<RegimeForecast> {
+    [5u32, 10, 20]
+        .iter()
+        .map(|&h| {
+            let a_h = matrix_power(transition_matrix, h);
+            let pi_h = vec_mat_mul(smoothed_probs, &a_h);
+            let most_likely_idx = (0..N_STATES)
+                .max_by(|&a, &b| pi_h[a].partial_cmp(&pi_h[b]).unwrap())
+                .unwrap();
+            RegimeForecast {
+                horizon_days: h,
+                bull_probability: pi_h[0],
+                bear_probability: pi_h[1],
+                crisis_probability: pi_h[2],
+                most_likely_regime: REGIME_LABELS[most_likely_idx].to_string(),
+                regime_change_probability: 1.0 - pi_h[current_regime as usize],
+            }
+        })
+        .collect()
 }
 
 /// Hand-written (not derived): `current_label`/`smoothing_note` are
@@ -91,6 +195,10 @@ impl<'de> Deserialize<'de> for RegimeState {
             n_iter: u32,
             #[allow(dead_code)]
             smoothing_note: String,
+            #[serde(default = "default_transition_matrix")]
+            transition_matrix: [[f64; N_STATES]; N_STATES],
+            #[serde(default)]
+            regime_forecast: Vec<RegimeForecast>,
         }
         let owned = RegimeStateOwned::deserialize(deserializer)?;
         let current_label = REGIME_LABELS
@@ -107,6 +215,8 @@ impl<'de> Deserialize<'de> for RegimeState {
             log_likelihood: owned.log_likelihood,
             n_iter: owned.n_iter,
             smoothing_note: SMOOTHING_NOTE,
+            transition_matrix: owned.transition_matrix,
+            regime_forecast: owned.regime_forecast,
         })
     }
 }
@@ -522,6 +632,8 @@ pub fn fit_hmm(nsei_returns: &[f64]) -> Result<(HmmModel, RegimeState)> {
         n_iter,
     };
 
+    let regime_forecast = build_regime_forecast(&smoothed_probs, &sorted_transition, current_regime);
+
     let state = RegimeState {
         current_regime,
         current_label: REGIME_LABELS[current_regime as usize],
@@ -531,6 +643,8 @@ pub fn fit_hmm(nsei_returns: &[f64]) -> Result<(HmmModel, RegimeState)> {
         log_likelihood: final_ll,
         n_iter,
         smoothing_note: SMOOTHING_NOTE,
+        transition_matrix: sorted_transition,
+        regime_forecast,
     };
 
     Ok((model, state))
@@ -638,5 +752,84 @@ mod tests {
     fn errors_on_too_few_observations() {
         let data = vec![0.001; 10];
         assert!(fit_hmm(&data).is_err());
+    }
+
+    fn sample_transition_matrix() -> [[f64; N_STATES]; N_STATES] {
+        [[0.90, 0.08, 0.02], [0.15, 0.70, 0.15], [0.05, 0.25, 0.70]]
+    }
+
+    #[test]
+    fn transition_matrix_rows_sum_to_one() {
+        let a = sample_transition_matrix();
+        for (i, row) in a.iter().enumerate() {
+            let sum: f64 = row.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-12, "row {i} sums to {sum}, expected 1.0");
+        }
+    }
+
+    #[test]
+    fn pi_h_sums_to_one_at_every_horizon() {
+        let a = sample_transition_matrix();
+        let gamma_t = [0.907, 0.090, 0.003];
+        for h in [0u32, 1, 5, 10, 20, 60] {
+            let a_h = matrix_power(&a, h);
+            let pi_h = vec_mat_mul(&gamma_t, &a_h);
+            let sum: f64 = pi_h.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-9, "h={h}: pi_h sums to {sum}, expected 1.0");
+        }
+    }
+
+    #[test]
+    fn at_horizon_zero_pi_h_matches_gamma_t() {
+        let a = sample_transition_matrix();
+        let gamma_t = [0.907, 0.090, 0.003];
+        let a_0 = matrix_power(&a, 0);
+        let pi_0 = vec_mat_mul(&gamma_t, &a_0);
+        for k in 0..N_STATES {
+            assert!((pi_0[k] - gamma_t[k]).abs() < 1e-12, "pi_0[{k}]={}, expected {}", pi_0[k], gamma_t[k]);
+        }
+    }
+
+    /// Repeated squaring must match naive repeated multiplication (the
+    /// textbook-obvious, but much slower, way to compute `a^h`).
+    #[test]
+    fn repeated_squaring_matches_naive_repeated_multiplication() {
+        let a = sample_transition_matrix();
+        for h in [0u32, 1, 2, 3, 5, 7, 10, 20, 37] {
+            let fast = matrix_power(&a, h);
+            let mut naive = mat_identity();
+            for _ in 0..h {
+                naive = mat_mul(&naive, &a);
+            }
+            for i in 0..N_STATES {
+                for j in 0..N_STATES {
+                    assert!(
+                        (fast[i][j] - naive[i][j]).abs() < 1e-10,
+                        "h={h} [{i}][{j}]: fast={} naive={}",
+                        fast[i][j],
+                        naive[i][j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn regime_change_probability_matches_one_minus_pi_h_current() {
+        let a = sample_transition_matrix();
+        let gamma_t = [0.907, 0.090, 0.003];
+        let current_regime = 0u8;
+        let forecasts = build_regime_forecast(&gamma_t, &a, current_regime);
+        for forecast in &forecasts {
+            let a_h = matrix_power(&a, forecast.horizon_days);
+            let pi_h = vec_mat_mul(&gamma_t, &a_h);
+            let expected = 1.0 - pi_h[current_regime as usize];
+            assert!(
+                (forecast.regime_change_probability - expected).abs() < 1e-9,
+                "h={}: regime_change_probability={}, expected {expected}",
+                forecast.horizon_days,
+                forecast.regime_change_probability
+            );
+        }
     }
 }
