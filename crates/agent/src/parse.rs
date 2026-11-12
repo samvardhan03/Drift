@@ -34,7 +34,7 @@ pub enum ParseError {
     #[error("gemini error: {0}")]
     Gemini(#[from] GeminiError),
     /// Gemini responded with text instead of calling a function: the
-    /// user's message didn't clearly map to one of the three experiments.
+    /// user's message didn't clearly map to any of the experiments.
     #[error("could not extract an experiment from the message: {0}")]
     Unrecognised(String),
     #[error("gemini returned no candidates")]

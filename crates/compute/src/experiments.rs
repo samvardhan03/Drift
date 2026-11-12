@@ -1,6 +1,8 @@
-//! Experiments: the three portfolio-risk experiments the compute layer
-//! exposes to the agent layer. `CvarRebalance` is a design note only (see
-//! module docs at the bottom) and is not implemented in this checkpoint.
+//! Experiments: the portfolio-risk experiments the compute layer exposes to
+//! the agent layer. `FactorShock` and `RiskDecomposition` are implemented in
+//! this file; the others live in their own modules (`cvar`, `performance`,
+//! `drift`, `reverse_stress`, `policy`) and are re-exported below.
+//! `crate::dispatch` is the single entry point that runs any of them.
 
 use std::collections::BTreeMap;
 
@@ -38,9 +40,9 @@ impl Portfolio {
     }
 }
 
-/// The three experiments the compute layer can run. `CvarRebalance` is a
-/// design placeholder (see the module doc at the end of this file) and its
-/// `run` path returns `ComputeError::Model` explaining it is unimplemented.
+/// The seven experiments the compute layer can run, all dispatched by
+/// `crate::dispatch`. Serialized with a `type` tag, e.g.
+/// `{"type": "CvarRebalance", ...}`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum Experiment {

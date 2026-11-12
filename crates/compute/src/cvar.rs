@@ -1,7 +1,7 @@
 //! CvarRebalance: Rockafellar-Uryasev CVaR-minimizing long-only rebalance
 //! over historical scenarios (raw simple returns of the holdings, per the
-//! design note — not factor-model-simulated). See the README's "CvarRebalance"
-//! section for the full formulation and the rationale for each choice below.
+//! design note — not factor-model-simulated). The formulation and the
+//! rationale for each choice are documented on the items below.
 
 use std::collections::BTreeMap;
 

@@ -21,7 +21,8 @@ All notable changes are documented here. This project follows [Keep a Changelog]
 - Upstream `INTEGRATION.md` moved to `docs/api-reference.md` with placeholder hosts
 - Postman collection base URL set to `http://localhost:8080`
 - FAQ/README: removed an incorrect "lookahead-safe" claim for the open core and an incorrect data-client claim
-- CI: `cargo fmt --check` is advisory until upstream code is formatted; toolchain file declares `rustfmt`/`clippy`
+- CI: `cargo fmt --check` is blocking; toolchain file declares `rustfmt`/`clippy`
+- Doc comments: `experiments.rs` no longer calls `CvarRebalance` unimplemented or counts three experiments (all seven are dispatched); `cvar.rs` no longer points at a README section that doesn't exist
 
 ### Added
 - Complete Rust workspace: `crates/agent`, `crates/compute`, `crates/server`, `crates/store`
